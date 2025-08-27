@@ -29,11 +29,11 @@ jobs:
 
     - name: Setup Toolchain
       run: rustup install stable && rustup default stable
-      if: matrix.os == 'macos-latest'
     - name: Add target for Apple Silicon
-      run: rustup target add aarch64-apple-darwin
       if: matrix.os == 'macos-latest'
+      run: rustup target add aarch64-apple-darwin
     - name: Add target for Intel
+      if: matrix.os == 'macos-latest'
       run: rustup target add x86_64-apple-darwin
 
     - name: Cache dependencies
@@ -66,10 +66,3 @@ jobs:
         name: ${{ matrix.os }}-${{ matrix.artifact_name }}
         path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
         retention-days: 30
-
-    - name: Build info
-      run: |
-        echo "Build completed for ${{ matrix.os }}"
-        echo "Target: ${{ matrix.target }}"
-        echo "Artifact: ${{ matrix.artifact_name }}"
-        ls -la target/${{ matrix.target }}/release/
