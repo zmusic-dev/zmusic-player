@@ -1,0 +1,30 @@
+[package]
+name = "zmusic-player"
+version = "4.0.0"
+edition = "2024"
+description = 'A network audio streaming player written in Rust'
+authors = ["Zhenxin <qgzhenxin@qq.com>"]
+license = "GPL-3.0"
+repository = "https://github.com/zmusic-dev/zmusic-player"
+
+[lib]
+name = "zmusic_player"
+crate-type = ["cdylib"]
+
+[dependencies]
+symphonia = { version = "0.5.4", features = ["mp3", "flac"] }
+ureq = "2.8"
+rubato = "0.12.0"
+cpal = "0.13.3"
+rb = "0.3.2"
+lazy_static = "1.5.0"
+ez_jni = "0.7.1"
+jni = "0.21.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
