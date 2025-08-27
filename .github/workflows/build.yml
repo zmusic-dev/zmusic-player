@@ -47,6 +47,10 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
+    - name: Install dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: apt-get update && apt-get install -y libasound2-dev
+
     - name: Build project
       run: cargo build --release --target ${{ matrix.target }}
 
