@@ -20,7 +20,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: zmusic_player.dll
           - os: macos-latest
-            target: x86_64-apple-darwin aarch64-apple-darwin
+            target: x86_64-apple-darwin
             artifact_name: libzmusic_player.dylib
 
     steps:
@@ -29,6 +29,9 @@ jobs:
 
     - name: Setup Toolchain
       run: rustup install stable && rustup default stable
+      if: matrix.os == 'macos-latest'
+    - name: Add target for Apple Silicon
+      run: rustup target add aarch64-apple-darwin
 
     - name: Cache dependencies
       uses: actions/cache@v4
