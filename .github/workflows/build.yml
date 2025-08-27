@@ -20,7 +20,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: zmusic_player.dll
           - os: macos-latest
-            target: x86_64-apple-darwin
+            target: x86_64-apple-darwin aarch64-apple-darwin
             artifact_name: libzmusic_player.dylib
 
     steps:
