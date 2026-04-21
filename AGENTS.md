@@ -7,7 +7,7 @@
 - **语言**: Zig 0.16.0
 - **构建系统**: `zig build`（`build.zig` + `build.zig.zon`）
 - **唯一外部依赖**: miniaudio（C 库，vendored 在 `vendor/miniaudio/`）
-- **最终产物**: `libzmusic.so`（共享库，供 Java 通过 JNI 加载）+ `zmusic`（桌面可执行文件，用于开发测试）
+- **最终产物**: `libzmusic.so`（共享库，供 Java 通过 JNI 加载）+ `zmusic-player`（桌面可执行文件，用于开发测试）
 
 ## 构建命令
 
@@ -123,7 +123,7 @@ playing/paused → stopped（用户停止或列表播完）
 
 ## 构建产物
 
-- `zig-out/bin/zmusic` — 桌面可执行文件
+- `zig-out/bin/zmusic-player` — 桌面可执行文件
 - `zig-out/lib/libzmusic.so`（或对应平台扩展名）— JNI 共享库
 
 ## 验证流程
