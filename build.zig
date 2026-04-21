@@ -135,7 +135,7 @@ fn configureModule(
 ) void {
     mod.addImport("miniaudio", miniaudio_mod);
     addMiniaudioCSources(b, mod);
-    linkPlatformLibs(mod, target);
+    linkPlatformLibs(b, mod, target);
 }
 
 /// 创建并注册模块级测试。
@@ -163,7 +163,7 @@ fn addModuleTest(
     for (imports) |imp| {
         t.root_module.addImport(imp[0], imp[1]);
     }
-    linkPlatformLibs(t.root_module, target);
+    linkPlatformLibs(b, t.root_module, target);
     test_step.dependOn(&b.addRunArtifact(t).step);
 }
 
@@ -197,7 +197,7 @@ fn addMiniaudioCSources(b: *std.Build, mod: *std.Build.Module) void {
 ///   - CoreAudio：核心音频服务
 ///   - AudioToolbox：高级音频工具箱（编解码、格式转换等）
 ///   - CoreFoundation：基础框架，提供数据类型和运行时支持
-fn linkPlatformLibs(mod: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+fn linkPlatformLibs(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget) void {
     switch (target.result.os.tag) {
         .linux => {
             mod.linkSystemLibrary("pthread", .{});
@@ -210,6 +210,14 @@ fn linkPlatformLibs(mod: *std.Build.Module, target: std.Build.ResolvedTarget) vo
             mod.linkSystemLibrary("uuid", .{});
         },
         .macos => {
+            // 显式添加 macOS SDK 框架搜索路径。
+            // Zig 的 linkFramework 在某些环境（如 CI）下无法自动定位 SDK，
+            // 需要通过 getSdk 获取路径后手动添加搜索路径。
+            if (std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result)) |sdk| {
+                mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+                mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
+                mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });
+            }
             mod.linkFramework("CoreAudio", .{});
             mod.linkFramework("AudioToolbox", .{});
             mod.linkFramework("CoreFoundation", .{});
