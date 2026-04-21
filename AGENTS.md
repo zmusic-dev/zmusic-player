@@ -50,6 +50,7 @@ zig build test
 src/
 ├── main.zig           # CLI 入口（桌面可执行文件）
 ├── player.zig         # Player API 统一入口，整合所有子系统
+├── platform.zig       # 跨平台工具函数（休眠等），统一收口平台差异
 ├── state/
 │   └── player_state.zig   # 播放状态枚举 + 错误类型定义
 ├── queue/
@@ -93,6 +94,19 @@ playing/paused → stopped（用户停止或列表播完）
 
 ## 编码规范
 
+### 跨平台要求（硬性）
+
+本项目必须同时支持 Linux、Windows、macOS 三个平台。所有代码必须满足：
+
+- **平台差异统一收口到 `src/platform.zig`**：涉及平台差异的功能（休眠、时间戳等）必须封装在 `platform.zig` 中，业务代码通过 `@import("platform.zig")` 调用，禁止在业务模块中直接使用平台特定 API
+- **禁止在条件编译外使用平台专用 API**：`std.os.linux.*`、`std.os.windows.*` 等平台特定函数可以正常使用，但必须在 `builtin.os.tag` 条件编译分支内
+- **优先使用 `std` 标准库**：需要平台分支时使用 `builtin.os.tag` 条件编译，参考 `src/platform.zig` 的实现模式
+- **新增代码必须交叉编译验证**：修改或新增 `.zig` 代码后，除本地构建外还需验证至少一个非本地目标平台的编译：
+  ```sh
+  zig build -Dtarget=x86_64-windows-gnu    # Windows
+  zig build -Dtarget=aarch64-macos         # macOS ARM64
+  ```
+
 ### Zig 代码风格
 
 - **模块文档注释**：每个 `.zig` 文件顶部用 `//!` 编写模块级文档，说明模块职责和在架构中的位置
@@ -105,7 +119,6 @@ playing/paused → stopped（用户停止或列表播完）
 
 ### Java 代码风格
 
-- JavaDoc 注释，`@author 真心`
 - JNI 函数命名遵循 JNI 规范：`Java_me_zhenxin_zmusic_ZMusicPlayer_{method}`
 
 ## 构建产物
@@ -129,6 +142,5 @@ zig build test                   # 运行测试
 - **无 linter / type checker 配置**：Zig 编译器本身提供类型检查；格式化使用内置 `zig fmt`（无配置文件，风格固定）
 - **CI**：GitHub Actions，Linux / Windows / macOS 三平台构建 + 测试（`.github/workflows/build.yml`）
 - **JNI bridge 当前为桩实现**：所有 native 方法返回 0 或空值，尚未接入实际播放引擎
-- **Playlist 洗牌使用 Linux 特定 API**：`std.os.linux.CLOCK.REALTIME`，跨平台时需修改
 - **HttpClient 必须堆分配**：`std.Io.Threaded.io()` 捕获结构体指针，栈分配会导致悬空指针
 - **`PlaybackState.@"error"`**：`error` 是 Zig 保留字，必须使用 `@"error"` 语法

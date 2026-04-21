@@ -26,6 +26,11 @@ pub fn build(b: *std.Build) void {
 
     const miniaudio_mod = createMiniaudioModule(b, target, optimize);
 
+    // 平台工具模块（跨平台休眠、时间戳等）
+    const platform_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform.zig"),
+    });
+
     // 共享库（JNI 桥接）
     // 编译为动态链接库（libzmusic.so / zmusic.dll），供 Java 层通过 System.loadLibrary 加载
     const shared_lib = b.addLibrary(.{
@@ -38,7 +43,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    configureModule(b, shared_lib.root_module, target, miniaudio_mod);
+    configureModule(b, shared_lib.root_module, target, miniaudio_mod, platform_mod);
     // callback 模块作为独立 import，供 bridge.zig 导入事件回调机制
     shared_lib.root_module.addImport("callback", b.createModule(.{
         .root_source_file = b.path("src/jni/callback.zig"),
@@ -56,7 +61,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    configureModule(b, exe.root_module, target, miniaudio_mod);
+    configureModule(b, exe.root_module, target, miniaudio_mod, platform_mod);
     b.installArtifact(exe);
 
     // 运行
@@ -80,7 +85,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    configureModule(b, main_tests.root_module, target, miniaudio_mod);
+    configureModule(b, main_tests.root_module, target, miniaudio_mod, platform_mod);
     test_step.dependOn(&b.addRunArtifact(main_tests).step);
 
     // 歌词模块（应用和测试共享）
@@ -94,15 +99,17 @@ pub fn build(b: *std.Build) void {
     // 解析器依赖类型定义模块
     lyrics_parser_mod.addImport("lyrics_types", lyrics_types_mod);
 
-    addModuleTest(b, test_step, target, optimize, miniaudio_mod, "tests/test_lyrics.zig", &.{
+    addModuleTest(b, test_step, target, optimize, miniaudio_mod, platform_mod, "tests/test_lyrics.zig", &.{
         .{ "lyrics_parser", lyrics_parser_mod },
         .{ "lyrics", lyrics_types_mod },
     });
 
-    addModuleTest(b, test_step, target, optimize, miniaudio_mod, "tests/test_queue.zig", &.{
-        .{ "queue", b.createModule(.{
-            .root_source_file = b.path("src/queue/playlist.zig"),
-        }) },
+    const queue_mod = b.createModule(.{
+        .root_source_file = b.path("src/queue/playlist.zig"),
+    });
+    queue_mod.addImport("platform", platform_mod);
+    addModuleTest(b, test_step, target, optimize, miniaudio_mod, platform_mod, "tests/test_queue.zig", &.{
+        .{ "queue", queue_mod },
     });
 }
 
@@ -132,8 +139,10 @@ fn configureModule(
     mod: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     miniaudio_mod: *std.Build.Module,
+    platform_mod: *std.Build.Module,
 ) void {
     mod.addImport("miniaudio", miniaudio_mod);
+    mod.addImport("platform", platform_mod);
     addMiniaudioCSources(b, mod);
     linkPlatformLibs(b, mod, target);
 }
@@ -148,6 +157,7 @@ fn addModuleTest(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     miniaudio_mod: *std.Build.Module,
+    platform_mod: *std.Build.Module,
     test_path: []const u8,
     imports: []const struct { []const u8, *std.Build.Module },
 ) void {
@@ -160,6 +170,7 @@ fn addModuleTest(
         }),
     });
     t.root_module.addImport("miniaudio", miniaudio_mod);
+    t.root_module.addImport("platform", platform_mod);
     for (imports) |imp| {
         t.root_module.addImport(imp[0], imp[1]);
     }

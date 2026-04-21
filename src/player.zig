@@ -22,6 +22,7 @@ const lyrics_parser = @import("lyrics/parser.zig");
 const net = @import("net/http_client.zig");
 const streaming = @import("net/streaming.zig");
 const ma = @import("miniaudio");
+const platform = @import("platform");
 
 // ---- 公共类型重导出 ----
 // 将子模块的核心类型提升到 Player 命名空间下，
@@ -279,8 +280,7 @@ pub const Player = struct {
 
             // 等待 50ms 让网络继续下载
             const current_pos = src.write_pos.load(.acquire);
-            var req: std.c.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
-            _ = std.c.nanosleep(&req, null);
+            platform.sleepMs(50);
 
             // 只有当缓冲数据没有增长时才算一次失败重试，
             // 数据在持续增长说明网络正常，只是解码器需要更多头部数据

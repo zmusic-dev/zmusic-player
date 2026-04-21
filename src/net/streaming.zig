@@ -16,6 +16,7 @@
 const std = @import("std");
 const ma = @import("miniaudio");
 const HttpClient = @import("http_client.zig").HttpClient;
+const platform = @import("platform");
 
 /// 流式音频源，管理"边下边播"所需的全部状态。
 ///
@@ -102,8 +103,7 @@ pub const StreamingSource = struct {
         const target = @min(self.total_size, INITIAL_BUFFER_SIZE);
         while (self.write_pos.load(.acquire) < target and !self.download_done.load(.acquire)) {
             // 短暂休眠避免空转浪费 CPU，5ms 在网络下载场景下是合理的轮询间隔
-            var req: std.c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
-            _ = std.c.nanosleep(&req, null);
+            platform.sleepMs(5);
         }
     }
 

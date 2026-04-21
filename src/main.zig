@@ -16,6 +16,7 @@ const player_mod = @import("player.zig");
 const Player = player_mod.Player;
 const PlaybackState = player_mod.PlaybackState;
 const ma = @import("miniaudio");
+const platform = @import("platform");
 
 /// ## main — 程序入口
 ///
@@ -112,7 +113,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 break;
             }
         }
-        var req: std.c.timespec = .{ .sec = 0, .nsec = 100 * std.time.ns_per_ms };
-        _ = std.c.nanosleep(&req, null);
+        platform.sleepMs(100);
     }
 }

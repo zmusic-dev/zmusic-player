@@ -11,6 +11,7 @@
 //! 本身不涉及音频播放逻辑。
 
 const std = @import("std");
+const platform = @import("platform");
 
 /// ## Track — 曲目信息
 ///
@@ -230,9 +231,6 @@ pub const Playlist = struct {
     ///
     /// 随机数种子基于当前时间（秒与纳秒的异或值），
     /// 这不是密码学安全的随机源，但对播放列表洗牌已经足够。
-    ///
-    /// **平台依赖**：使用 `std.os.linux.CLOCK.REALTIME` 获取时间戳，
-    /// 因此本模块目前仅支持 Linux 平台。
     fn regenerateShuffleOrder(self: *Playlist) !void {
         if (self.shuffle_order) |*so| so.deinit();
         var order = std.array_list.Managed(usize).init(self.allocator);
@@ -244,8 +242,7 @@ pub const Playlist = struct {
         }
 
         // 步骤 2：基于系统时钟初始化伪随机数生成器
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.os.linux.CLOCK.REALTIME, &ts);
+        const ts = platform.timestamp();
         var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(ts.sec)) ^ @as(u64, @intCast(ts.nsec)));
         const rand = rng.random();
 

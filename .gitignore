@@ -1,6 +1,7 @@
 # Zig
 .zig-cache/
 zig-out/
+*.o
 
 # IDE - IntelliJ
 .idea/
