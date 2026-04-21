@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
     // 可执行文件
     // 独立运行的播放器程序，用于桌面环境下的开发测试
     const exe = b.addExecutable(.{
-        .name = "zmusic",
+        .name = "zmusic-player",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
