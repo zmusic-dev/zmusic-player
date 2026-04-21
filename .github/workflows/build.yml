@@ -17,7 +17,7 @@ jobs:
             target: x86_64-windows-gnu
           - os: macos-latest
             target: aarch64-macos
-          - os: macos-13
+          - os: macos-15
             target: x86_64-macos
 
     runs-on: ${{ matrix.os }}
@@ -27,10 +27,7 @@ jobs:
         with:
           submodules: true
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: ${{ matrix.target }}
+      - uses: jdx/mise-action@v4
 
       - name: Configure Xcode
         if: runner.os == 'macOS'
