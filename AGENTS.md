@@ -116,7 +116,7 @@ playing/paused → stopped（用户停止或列表播完）
 ## 注意事项
 
 - **无 linter / type checker 配置**：Zig 编译器本身提供类型检查；格式化使用内置 `zig fmt`（无配置文件，风格固定）
-- **无 CI 配置**
+- **CI**：GitHub Actions，Linux / Windows / macOS 三平台构建 + 测试（`.github/workflows/build.yml`）
 - **JNI bridge 当前为桩实现**：所有 native 方法返回 0 或空值，尚未接入实际播放引擎
 - **Playlist 洗牌使用 Linux 特定 API**：`std.os.linux.CLOCK.REALTIME`，跨平台时需修改
 - **HttpClient 必须堆分配**：`std.Io.Threaded.io()` 捕获结构体指针，栈分配会导致悬空指针
