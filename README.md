@@ -46,6 +46,22 @@ zig build -Dtarget=x86_64-windows-gnu      # Windows
 zig build -Dtarget=aarch64-macos           # macOS ARM64
 ```
 
+## 架构
+
+```
+src/
+├── main.zig           # CLI 入口（桌面可执行文件）
+├── player.zig         # Player API 统一入口
+├── state/             # 播放状态机 + 错误类型
+├── queue/             # 播放队列管理
+├── lyrics/            # LRC 歌词解析器
+├── net/               # HTTP 客户端 + 流式播放
+└── jni/               # JNI 导出函数 + 事件回调
+
+examples/              # Java 侧 JNI 接口示例
+vendor/miniaudio/      # C 音频引擎（vendored）
+```
+
 ## 开源协议
 
 本项目使用 [GPL-3.0](LICENSE) 协议开放源代码

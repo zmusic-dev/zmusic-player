@@ -113,6 +113,17 @@ playing/paused → stopped（用户停止或列表播完）
 - `zig-out/bin/zmusic` — 桌面可执行文件
 - `zig-out/lib/libzmusic.so`（或对应平台扩展名）— JNI 共享库
 
+## 验证流程
+
+修改或新增 `.zig` 代码后，必须执行：
+
+```sh
+zig fmt src/ tests/ examples/    # 格式化
+zig build test                   # 运行测试
+```
+
+**禁止提交未格式化的代码。**
+
 ## 注意事项
 
 - **无 linter / type checker 配置**：Zig 编译器本身提供类型检查；格式化使用内置 `zig fmt`（无配置文件，风格固定）
