@@ -17,7 +17,7 @@ jobs:
             target: x86_64-windows-gnu
           - os: macos-latest
             target: aarch64-macos
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-macos
 
     runs-on: ${{ matrix.os }}
@@ -31,7 +31,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .zig-cache
           key: zig-${{ matrix.target }}-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/miniaudio/miniaudio.h') }}
@@ -44,7 +44,7 @@ jobs:
         run: zig build test -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zmusic-${{ matrix.target }}
           path: |
@@ -57,12 +57,12 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: zmusic-aarch64-macos
           path: dist/aarch64
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: zmusic-x86_64-macos
           path: dist/x86_64
@@ -80,7 +80,7 @@ jobs:
           done
 
       - name: Upload universal artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zmusic-universal-macos
           path: |
