@@ -31,6 +31,12 @@ jobs:
         with:
           version: 0.16.0
 
+      - uses: actions/cache@v4
+        with:
+          path: .zig-cache
+          key: zig-${{ matrix.target }}-${{ hashFiles('build.zig', 'build.zig.zon', 'vendor/miniaudio/miniaudio.h') }}
+          restore-keys: zig-${{ matrix.target }}-
+
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
 
