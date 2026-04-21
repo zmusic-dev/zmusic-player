@@ -1,0 +1,19 @@
+# Zig
+.zig-cache/
+zig-out/
+
+# IDE - IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# IDE - VSCode
+.vscode/
+
+# Claude Code
+.claude/*.local.*
+
+# MCP
+.playwright-mcp/
+.playwright-cli/
