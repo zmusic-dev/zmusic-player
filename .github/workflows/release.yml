@@ -93,21 +93,6 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-<<<<<<< HEAD
-
-      - name: Package
-        run: |
-          version="${GITHUB_REF_NAME}"
-          for dir in artifacts/zmusic-*; do
-            name=$(basename "$dir")
-            if [[ "$name" == *windows* ]]; then
-              cd "$dir" && zip -r "../../${name}-${version}.zip" . && cd -
-            else
-              tar czf "${name}-${version}.tar.gz" -C "$dir" .
-            fi
-          done
-=======
->>>>>>> dev
 
       - name: Package
         run: |
