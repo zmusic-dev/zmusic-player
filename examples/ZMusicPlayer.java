@@ -424,64 +424,305 @@ public class ZMusicPlayer {
         thread.start();
     }
 
-    // ---- 演示 ----
+    // ---- 交互式 CLI ----
+
+    /** 终端原始模式已激活标记 */
+    private static boolean rawModeActive = false;
 
     /**
-     * 演示程序入口。
+     * 交互式 CLI 入口。
      *
-     * <p>演示流程：初始化 → 设置事件监听 → 播放 → 暂停 → 恢复 → 销毁。
-     * 通过命令行参数传入音频 URL 或本地路径。</p>
+     * <p>功能与 Zig CLI（main.zig）对齐：
+     * <ul>
+     *   <li>命令行参数：{@code play <URL或路径> [--lyrics <LRC路径或URL>]}</li>
+     *   <li>实时显示：进度条 + 播放状态 + 时间 + 音量 + 歌词</li>
+     *   <li>键盘控制：空格暂停/播放、q 退出、←→ 快退/快进 5 秒、↑↓ 音量增减 10%</li>
+     * </ul>
+     * </p>
      *
-     * @param args 命令行参数，第一个参数为音频 URL 或本地文件路径
+     * @param args 命令行参数
+     * @author 真心
+     * @since 2026-04-22 00:00
      */
     public static void main(String[] args) {
+        // ---- 参数解析 ----
+        if (args.length == 0) {
+            printUsage();
+            return;
+        }
+
+        if (args[0].equals("--help") || args[0].equals("-h")) {
+            printHelp();
+            return;
+        }
+
+        if (!args[0].equals("play")) {
+            System.out.println("未知命令: " + args[0]);
+            return;
+        }
+
+        if (args.length < 2) {
+            System.out.println("错误: play 命令需要一个 URL 或文件路径");
+            return;
+        }
+
+        String source = args[1];
+        String lyricsPath = null;
+
+        for (int i = 2; i < args.length; i++) {
+            if ("--lyrics".equals(args[i]) && i + 1 < args.length) {
+                lyricsPath = args[++i];
+            }
+        }
+
+        // ---- 初始化播放器 ----
         ZMusicPlayer player = new ZMusicPlayer();
         try {
-            // 设置事件监听器，打印各类事件信息
-            player.setEventListener(new EventListener() {
-                @Override public void onStateChanged(int state) {
-                    System.out.println("[状态] " + stateToString(state));
+            // 加载歌词（如果指定）
+            boolean hasLyrics = false;
+            if (lyricsPath != null) {
+                String lrcContent = loadTextResource(lyricsPath);
+                if (lrcContent != null) {
+                    player.loadLyrics(lrcContent);
+                    hasLyrics = true;
+                } else {
+                    System.out.println("无法加载歌词: " + lyricsPath);
+                    return;
                 }
-                @Override public void onTrackEnded() {
-                    System.out.println("[事件] 播放结束");
-                }
-                @Override public void onProgress(long pos, long dur) {
-                    System.out.printf("[进度] %d/%d ms%n", pos, dur);
-                }
-                @Override public void onError(String msg) {
-                    System.out.println("[错误] " + msg);
-                }
-                @Override public void onBuffering(boolean buf) {
-                    System.out.println("[缓冲] " + buf);
-                }
-            });
-
-            if (args.length > 0) {
-                // 开始播放命令行指定的音频
-                System.out.println("正在播放: " + args[0]);
-                player.play(args[0]);
-
-                // 播放 10 秒后暂停
-                Thread.sleep(10000);
-                System.out.println("暂停中...");
-                player.pause();
-
-                // 暂停 2 秒后恢复播放
-                Thread.sleep(2000);
-                System.out.println("恢复播放...");
-                player.resume();
-
-                // 继续播放 5 秒后结束
-                Thread.sleep(5000);
-            } else {
-                System.out.println("用法: java me.zhenxin.zmusic.ZMusicPlayer <URL或路径>");
             }
+
+            System.out.println("正在播放: " + source);
+            if (hasLyrics) {
+                System.out.println("歌词已加载: " + lyricsPath);
+            }
+
+            int ret = player.play(source);
+            if (ret != 0) {
+                System.out.println("播放失败 (错误码: " + ret + ")");
+                return;
+            }
+
+            // ---- 进入终端原始模式 ----
+            enableRawMode();
+            boolean displayStarted = false;
+
+            // ---- 主显示循环 ----
+            // 固定 3 行显示区，原地刷新：
+            //   第 1 行：进度条
+            //   第 2 行：播放状态 + 时间 + 音量 + 歌词
+            //   第 3 行：控制提示
+            while (true) {
+                int state = player.getState();
+                if (state != STATE_PLAYING && state != STATE_PAUSED) break;
+
+                // 键盘控制
+                int key = readKey();
+                if (key != 0) {
+                    switch (key) {
+                        case ' ' -> {
+                            if (state == STATE_PLAYING) player.pause();
+                            else if (state == STATE_PAUSED) player.resume();
+                        }
+                        case 'q', 'Q' -> {
+                            player.stop();
+                            continue;
+                        }
+                        case 27 -> {
+                            // ANSI 转义序列：方向键 ESC [ A/B/C/D
+                            int c1 = readKey();
+                            int c2 = readKey();
+                            if (c1 == '[') {
+                                switch (c2) {
+                                    case 'D' -> { // 左箭头：快退 5 秒
+                                        long pos = player.getPosition();
+                                        player.seek(Math.max(0, pos - 5000));
+                                    }
+                                    case 'C' -> { // 右箭头：快进 5 秒
+                                        long pos = player.getPosition();
+                                        long dur = player.getDuration();
+                                        if (pos + 5000 < dur) player.seek(pos + 5000);
+                                    }
+                                    case 'A' -> // 上箭头：音量 +10%
+                                        player.setVolume(Math.min(1.0f, player.getVolume() + 0.1f));
+                                    case 'B' -> // 下箭头：音量 -10%
+                                        player.setVolume(Math.max(0.0f, player.getVolume() - 0.1f));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 检测播放结束
+                if (state == STATE_PLAYING) {
+                    long pos = player.getPosition();
+                    long dur = player.getDuration();
+                    // 时长有效且位置接近末尾，视为播放结束
+                    if (dur > 0 && pos > 0 && pos >= dur - 500) break;
+                }
+
+                // ---- 重绘 3 行显示区 ----
+                long position = player.getPosition();
+                long duration = player.getDuration();
+
+                // 第 1 行：进度条
+                float pct = duration > 0 ? (float) position / duration : 0f;
+                int barWidth = 40;
+                int filled = (int) (pct * barWidth);
+                StringBuilder bar = new StringBuilder("\r\u001B[2K进度：[");
+                for (int j = 0; j < barWidth; j++) {
+                    bar.append(j < filled ? '█' : '░');
+                }
+                bar.append(']');
+                System.out.println(bar);
+
+                // 第 2 行：播放状态 + 时间 + 音量 + 歌词
+                String stateIcon = switch (player.getState()) {
+                    case STATE_PLAYING -> "▶";
+                    case STATE_PAUSED -> "⏸";
+                    default -> "■";
+                };
+                long posMin = position / 60000;
+                long posSec = (position % 60000) / 1000;
+                long durMin = duration / 60000;
+                long durSec = (duration % 60000) / 1000;
+                int volPct = (int) (player.getVolume() * 100);
+
+                System.out.printf("\r\u001B[2K%s %02d:%02d/%02d:%02d", stateIcon, posMin, posSec, durMin, durSec);
+                if (volPct != 100) System.out.printf(" vol:%02d%%", volPct);
+
+                String lyric = player.getCurrentLyric();
+                if (lyric != null && !lyric.isEmpty()) {
+                    System.out.print("  " + lyric);
+                }
+                System.out.println();
+
+                // 第 3 行：控制提示
+                System.out.print("\r\u001B[2KSpace:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量\n");
+
+                // 光标上移 3 行，回到显示区起点
+                System.out.print("\u001B[3A");
+                System.out.flush();
+
+                displayStarted = true;
+                Thread.sleep(200);
+            }
+
+            if (displayStarted) System.out.println();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            // 无论是否异常，确保销毁原生资源
+            disableRawMode();
             player.destroy();
         }
+    }
+
+    // ---- 终端控制 ----
+
+    /**
+     * 启用终端原始模式：关闭行缓冲和回显。
+     * 使用 {@code stty} 命令修改终端属性，仅支持 Unix/Linux/macOS。
+     */
+    private static void enableRawMode() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) return; // Windows 暂不支持原始模式
+        try {
+            Runtime.getRuntime().exec(new String[]{"/bin/sh", "-c",
+                "stty -echo -icanon min 0 time 0 < /dev/tty"}).waitFor();
+            rawModeActive = true;
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * 恢复终端为正常模式。
+     */
+    private static void disableRawMode() {
+        if (!rawModeActive) return;
+        try {
+            Runtime.getRuntime().exec(new String[]{"/bin/sh", "-c",
+                "stty echo icanon < /dev/tty"}).waitFor();
+            rawModeActive = false;
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * 从标准输入读取一个按键（非阻塞）。
+     *
+     * @return 按键的 ASCII 码，无输入时返回 0
+     */
+    private static int readKey() {
+        try {
+            if (System.in.available() > 0) return System.in.read();
+        } catch (Exception ignored) {}
+        return 0;
+    }
+
+    // ---- 资源加载 ----
+
+    /**
+     * 加载文本资源，支持本地文件和 HTTP(S) URL。
+     *
+     * <p>本地文件使用 {@link java.io.File} 读取，
+     * HTTP URL 使用 {@link java.net.HttpURLConnection} 下载。</p>
+     *
+     * @param path 本地文件路径或 HTTP(S) URL
+     * @return 文本内容，加载失败时返回 null
+     * @author 真心
+     * @since 2026-04-22 00:00
+     */
+    private static String loadTextResource(String path) {
+        try {
+            if (path.startsWith("http://") || path.startsWith("https://")) {
+                // HTTP(S) URL：下载歌词内容
+                var url = java.net.URI.create(path).toURL();
+                var conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(10000);
+                conn.setRequestMethod("GET");
+                try (var is = conn.getInputStream();
+                     var reader = new java.io.InputStreamReader(is, java.nio.charset.StandardCharsets.UTF_8)) {
+                    var sb = new StringBuilder();
+                    var buf = new char[8192];
+                    int n;
+                    while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
+                    return sb.toString();
+                }
+            } else {
+                // 本地文件
+                return java.nio.file.Files.readString(java.nio.file.Path.of(path));
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ---- 帮助信息 ----
+
+    /**
+     * 打印用法提示。
+     */
+    private static void printUsage() {
+        System.out.println("用法: java me.zhenxin.zmusic.ZMusicPlayer <命令> [参数...]");
+        System.out.println("命令:");
+        System.out.println("  play <URL或路径>  播放 URL 或本地音频文件");
+        System.out.println("  --help            显示帮助信息");
+    }
+
+    /**
+     * 打印详细帮助信息。
+     */
+    private static void printHelp() {
+        System.out.println("ZMusic Player - 网络音频播放器");
+        System.out.println();
+        System.out.println("用法: java me.zhenxin.zmusic.ZMusicPlayer play <URL或路径> [--lyrics <LRC路径>]");
+        System.out.println();
+        System.out.println("选项:");
+        System.out.println("  --lyrics <路径>   加载 LRC 格式歌词文件（支持本地路径和 HTTP URL）");
+        System.out.println();
+        System.out.println("播放控制:");
+        System.out.println("  Space   播放 / 暂停");
+        System.out.println("  q       停止并退出");
+        System.out.println("  ←/→     快退/快进 5 秒");
+        System.out.println("  ↑/↓     音量增减 10%");
     }
 
     /**
