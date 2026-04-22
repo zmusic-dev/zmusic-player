@@ -44,9 +44,7 @@ zig build -Dtarget=aarch64-macos
 
 - JNI 命名：`Java_me_zhenxin_zmusic_ZMusicPlayer_{method}`
 
-## CI 脚本
-
-脚本在 `scripts/` 目录，禁止在 workflow YAML 中写内联逻辑。规则：bash + `set -euo pipefail`，参数通过环境变量，脚本顶部含用途说明和环境变量文档。
+## CI
 
 Actions 版本：`actions/checkout@v6`、`jdx/mise-action@v4`、`actions/upload-artifact@v7`、`actions/download-artifact@v8`、`softprops/action-gh-release@v3`。
 

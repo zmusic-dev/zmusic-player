@@ -49,37 +49,8 @@ jobs:
             zig-out/bin/
             zig-out/lib/
 
-  # macOS universal binary: lipo merge aarch64 + x86_64
-  macos-universal:
-    needs: build
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: zmusic-aarch64-macos
-          path: dist/aarch64
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: zmusic-x86_64-macos
-          path: dist/x86_64
-
-      - name: Create universal binary
-        run: bash scripts/create-universal-macos.sh
-
-      - name: Upload universal artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: zmusic-universal-macos
-          path: |
-            zig-out/bin/
-            zig-out/lib/
-
   release:
-    needs: [build, macos-universal]
+    needs: [build]
     runs-on: ubuntu-latest
 
     steps:
@@ -90,7 +61,18 @@ jobs:
           path: artifacts
 
       - name: Package
-        run: bash scripts/package-artifacts.sh
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          for dir in artifacts/zmusic-*; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            if [[ "$name" == *windows* ]]; then
+              (cd "$dir" && zip -r "../../${name}-${version}.zip" .)
+            else
+              tar czf "${name}-${version}.tar.gz" -C "$dir" .
+            fi
+          done
 
       - name: Determine prerelease
         id: prerelease

@@ -47,31 +47,3 @@ jobs:
             zig-out/bin/
             zig-out/lib/
 
-  # macOS universal binary: lipo merge aarch64 + x86_64
-  macos-universal:
-    needs: build
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: zmusic-aarch64-macos
-          path: dist/aarch64
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: zmusic-x86_64-macos
-          path: dist/x86_64
-
-      - name: Create universal binary
-        run: bash scripts/create-universal-macos.sh
-
-      - name: Upload universal artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: zmusic-universal-macos
-          path: |
-            zig-out/bin/
-            zig-out/lib/
