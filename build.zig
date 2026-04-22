@@ -251,11 +251,13 @@ fn linkPlatformLibs(b: *std.Build, mod: *std.Build.Module, target: std.Build.Res
                 mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
                 mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
                 mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });
+                // Zig 交叉编译 macOS 时 -lc 链接的是 Zig 自带 libc，不含 iconv。
+                // 需要显式链接系统的 libiconv（SDK 的 usr/lib/libiconv.tbd）。
+                mod.linkSystemLibrary("iconv", .{});
             }
             mod.linkFramework("CoreAudio", .{});
             mod.linkFramework("AudioToolbox", .{});
             mod.linkFramework("CoreFoundation", .{});
-            // macOS 的 iconv 函数包含在 libSystem（libc）中，无需单独链接 libiconv
         },
         else => {},
     }
