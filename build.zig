@@ -255,6 +255,8 @@ fn linkPlatformLibs(b: *std.Build, mod: *std.Build.Module, target: std.Build.Res
             mod.linkFramework("CoreAudio", .{});
             mod.linkFramework("AudioToolbox", .{});
             mod.linkFramework("CoreFoundation", .{});
+            // libiconv：歌词解析器用于 GBK → UTF-8 编码转换
+            mod.linkSystemLibrary("iconv", .{});
         },
         else => {},
     }

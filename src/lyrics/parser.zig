@@ -2,20 +2,96 @@
 //!
 //! 本模块实现了 LRC 格式歌词的完整解析流程，支持标准 LRC 格式和翻译歌词。
 //!
-//! 解析流程：逐行扫描 → 元数据提取 → 时间戳解析 → 排序 → 翻译配对 → 应用偏移
+//! 解析流程：编码检测 → 逐行扫描 → 元数据提取 → 时间戳解析 → 排序 → 翻译配对 → 应用偏移
 //!
 //! 在整体架构中，本模块是歌词子系统的数据入口，负责将原始 LRC 文本转换为
 //! 结构化的 `Lyrics` 对象，供歌词渲染器使用。
 //!
 //! 翻译歌词的配对策略：如果两行歌词的时间戳差值不超过 500ms，
 //! 则将后一行视为前一行的翻译。这是业界常见的翻译歌词排版约定。
+//!
+//! ## 编码处理
+//!
+//! 中文 LRC 歌词文件常见 GBK 编码（尤其是国内音乐平台），本模块在解析前
+//! 自动检测编码：先验证 UTF-8 有效性，如果无效则尝试通过 iconv 将 GBK
+//! 转换为 UTF-8。iconv 在 Linux（glibc 内置）和 macOS（libiconv）上可用。
+//! Windows 目标暂不支持 GBK 自动转换（Zig 交叉编译工具链未包含 libiconv），
+//! 非 UTF-8 内容将原样传递给解析器尽力处理。
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("lyrics_types");
 
 const LyricLine = types.LyricLine;
 const LrcMetadata = types.LrcMetadata;
 const Lyrics = types.Lyrics;
+
+// ---- iconv C 函数声明（仅 Linux / macOS） ----
+// 用于 GBK → UTF-8 编码转换。Linux 通过 glibc 内置 iconv，macOS 通过 libiconv。
+// Windows 目标不链接 iconv，编译时通过条件编译排除相关代码。
+
+/// iconv 转换描述符，实际类型为 opaque 指针。
+const IconvT = opaque {};
+
+const has_iconv = builtin.os.tag != .windows;
+
+extern fn iconv_open(tocode: [*:0]const u8, fromcode: [*:0]const u8) ?*IconvT;
+extern fn iconv(
+    cd: *IconvT,
+    inbuf: *?[*]const u8,
+    inbytesleft: *usize,
+    outbuf: *?[*]u8,
+    outbytesleft: *usize,
+) usize;
+extern fn iconv_close(cd: *IconvT) c_int;
+
+/// 将非 UTF-8 内容从 GBK 转换为 UTF-8。
+///
+/// 采用启发式策略：先用 `std.unicode.utf8Validate` 检查 UTF-8 有效性，
+/// 如果无效则假设为 GBK 编码并通过 iconv 转换。转换失败时返回原始内容，
+/// 让后续解析逻辑尽力处理（不会导致整体失败）。
+///
+/// Windows 目标不支持 iconv，非 UTF-8 内容将原样返回。
+///
+/// 参数：
+///   `allocator` - 内存分配器，用于分配转换后的 UTF-8 缓冲区
+///   `content`   - 原始 LRC 文件内容
+///
+/// 返回：UTF-8 编码的内容切片。如果是新分配的缓冲区，调用方负责释放。
+fn ensureUtf8(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
+    // 如果已经是合法 UTF-8，直接返回
+    if (std.unicode.utf8ValidateSlice(content)) return content;
+
+    // Windows 目标不链接 iconv，非 UTF-8 内容原样返回
+    if (!has_iconv) return content;
+
+    // 尝试通过 iconv 从 GBK 转换为 UTF-8
+    const cd = iconv_open("UTF-8", "GBK") orelse return content;
+    defer _ = iconv_close(cd);
+
+    // GBK → UTF-8 最坏情况下每个字节扩展为 3 字节（中文字符），
+    // 预留额外空间避免反复扩展
+    const out_len = content.len * 3;
+    const out_buf = try allocator.alloc(u8, out_len);
+
+    var in_ptr: ?[*]const u8 = content.ptr;
+    var in_left: usize = content.len;
+    var out_ptr: ?[*]u8 = out_buf.ptr;
+    var out_left: usize = out_len;
+
+    const result = iconv(cd, &in_ptr, &in_left, &out_ptr, &out_left);
+    _ = result;
+
+    const converted_len = out_len - out_left;
+    if (converted_len == 0) {
+        // 转换失败（可能是非 GBK 编码），释放缓冲区并返回原始内容
+        allocator.free(out_buf);
+        return content;
+    }
+
+    // 截断到实际转换长度
+    return allocator.realloc(out_buf, converted_len) catch out_buf[0..converted_len];
+}
 
 /// 解析中间态：原始歌词行
 ///
@@ -43,6 +119,17 @@ const RawLine = struct { time_ms: u64, text: []const u8 };
 ///
 /// 错误：内存分配失败时返回相应的错误
 pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Lyrics {
+    // 编码预处理：检测并转换 GBK 等非 UTF-8 编码为 UTF-8。
+    // 如果触发了转换，converted_content 为新分配的缓冲区，函数结束时释放。
+    const converted_content = try ensureUtf8(allocator, content);
+    defer {
+        // 只有当 ensureUtf8 分配了新缓冲区时才释放
+        // （如果内容已经是 UTF-8，返回的切片等于原始 content，不持有独立内存）
+        if (converted_content.ptr != content.ptr) {
+            allocator.free(converted_content);
+        }
+    }
+
     var lyrics = Lyrics.init(allocator);
     // 解析失败时自动清理已分配的 Lyrics 资源
     errdefer lyrics.deinit();
@@ -56,7 +143,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Lyrics {
     }
 
     // 第一阶段：逐行扫描，提取元数据和带时间戳的歌词行
-    var lines = std.mem.splitSequence(u8, content, "\n");
+    var lines = std.mem.splitSequence(u8, converted_content, "\n");
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;

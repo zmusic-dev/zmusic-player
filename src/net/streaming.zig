@@ -41,6 +41,9 @@ pub const StreamingSource = struct {
     /// 下载是否已完成（无论成功或失败）。
     /// 原子变量：解码线程通过检查此标志判断是否到达数据末尾。
     download_done: std.atomic.Value(bool),
+    /// 是否已取消下载。deinit 时设置为 true，下载线程在写入路径检测到后
+    /// 主动中止，避免 thread.join() 无限等待阻塞在网络 I/O 上的下载线程。
+    cancelled: std.atomic.Value(bool),
     /// 下载过程中遇到的错误，供调用方在播放结束后检查
     download_err: ?anyerror,
     /// 后台下载线程句柄，deinit 时通过 join 等待其结束
@@ -74,6 +77,7 @@ pub const StreamingSource = struct {
             .write_pos = std.atomic.Value(usize).init(0),
             .read_offset = 0,
             .download_done = std.atomic.Value(bool).init(false),
+            .cancelled = std.atomic.Value(bool).init(false),
             .download_err = null,
             // thread 稍后赋值；这里用 undefined 是安全的，因为必定会被覆盖
             .thread = undefined,
@@ -112,7 +116,14 @@ pub const StreamingSource = struct {
     /// 必须先 join 下载线程，确保下载线程不再访问缓冲区后再释放内存。
     /// 调用此方法后，所有指向该 StreamingSource 的指针都失效。
     pub fn deinit(self: *StreamingSource) void {
-        // 等待下载线程结束，避免释放缓冲区时下载线程仍在写入
+        // 设置取消标志，让下载线程在下次写入时主动退出。
+        // 如果下载线程正阻塞在网络 I/O 上，它会继续等待数据，
+        // 但一旦有数据到来并触发写入回调，就会检测到取消并中止。
+        // 同时设置 download_done 防止解码线程永远等待。
+        self.cancelled.store(true, .release);
+        self.download_done.store(true, .release);
+        // 等待下载线程结束。由于 cancelled 标志会导致写入回调返回错误，
+        // http.client.fetch() 会因写入失败而提前退出，join 通常很快返回。
         self.thread.join();
         self.allocator.free(self.data);
         self.allocator.destroy(self);
@@ -202,10 +213,13 @@ pub const StreamingSource = struct {
         ///   `splat` - 未使用（Zig Writer 接口要求但本实现不需要）
         fn drainFn(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
             _ = splat;
-            // 从 Writer 指针反推出 StreamingWriter 容器指针
             const sw: *StreamingWriter = @alignCast(@fieldParentPtr("writer", w));
 
-            // 先将暂存区中的数据刷入共享缓冲区
+            // 检查取消标志：如果已取消，立即返回错误让 fetch 中止。
+            // 这是 deinit → join 能快速返回的关键路径：
+            // fetch 收到写入错误后会停止下载，下载线程退出，join 返回。
+            if (sw.source.cancelled.load(.acquire)) return error.WriteFailed;
+
             sw.commit();
 
             // 然后直接将新数据写入共享缓冲区，跳过暂存区中转
