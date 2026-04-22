@@ -1,12 +1,7 @@
 .{
     .name = .zmusic_player,
     .version = "0.1.0",
-    .dependencies = .{
-        .zigzag = .{
-            .url = "https://github.com/meszmate/zigzag/archive/refs/tags/v0.1.2.tar.gz",
-            .hash = "zigzag-0.1.0-YXwYS20gCwATYmA0IOAYQVHykNP--Dl7bKfp2UDE0K2I",
-        },
-    },
+    .dependencies = .{},
     .fingerprint = 0xf9cb23d3dc08446e,
     .minimum_zig_version = "0.16.0",
     .paths = .{

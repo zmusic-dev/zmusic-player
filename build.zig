@@ -63,13 +63,6 @@ pub fn build(b: *std.Build) void {
     });
     configureModule(b, exe.root_module, target, miniaudio_mod, platform_mod);
 
-    // ZigZag TUI 框架
-    const zigzag_dep = b.dependency("zigzag", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("zigzag", zigzag_dep.module("zigzag"));
-
     b.installArtifact(exe);
 
     // 运行
