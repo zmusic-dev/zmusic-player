@@ -8,9 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     strategy:
@@ -95,16 +92,20 @@ jobs:
       - name: Package
         run: bash scripts/package-artifacts.sh
 
-      - name: Generate manifest
+      - name: Determine prerelease
         id: prerelease
-        run: bash scripts/generate-manifest.sh
+        run: |
+          is_prerelease="false"
+          if [[ "${GITHUB_REF_NAME}" =~ -(alpha|beta|rc|pre)\. ]]; then
+            is_prerelease="true"
+          fi
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             *.tar.gz
             *.zip
-            manifest.json
           generate_release_notes: true
           prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
