@@ -671,6 +671,9 @@ public class ZMusicPlayer {
      */
     private static String loadTextResource(String path) {
         try {
+            byte[] bytes;
+            String detectedCharset = null;
+
             if (path.startsWith("http://") || path.startsWith("https://")) {
                 // HTTP(S) URL：下载歌词内容
                 var url = java.net.URI.create(path).toURL();
@@ -678,18 +681,39 @@ public class ZMusicPlayer {
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(10000);
                 conn.setRequestMethod("GET");
-                try (var is = conn.getInputStream();
-                     var reader = new java.io.InputStreamReader(is, java.nio.charset.StandardCharsets.UTF_8)) {
-                    var sb = new StringBuilder();
-                    var buf = new char[8192];
-                    int n;
-                    while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
-                    return sb.toString();
+
+                // 从 Content-Type 头提取 charset
+                String contentType = conn.getContentType();
+                if (contentType != null) {
+                    for (String part : contentType.split(";")) {
+                        String trimmed = part.trim().toLowerCase();
+                        if (trimmed.startsWith("charset=")) {
+                            detectedCharset = trimmed.substring(8).trim();
+                            break;
+                        }
+                    }
+                }
+
+                try (var is = conn.getInputStream()) {
+                    bytes = is.readAllBytes();
                 }
             } else {
                 // 本地文件
-                return java.nio.file.Files.readString(java.nio.file.Path.of(path));
+                bytes = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(path));
             }
+
+            // 编码检测：有 charset 用 charset，否则尝试 UTF-8，失败则回退 GBK
+            if (detectedCharset != null) {
+                return new String(bytes, detectedCharset);
+            }
+            // 跳过 BOM（如有）
+            int start = (bytes.length >= 3 && bytes[0] == (byte) 0xEF
+                    && bytes[1] == (byte) 0xBB && bytes[2] == (byte) 0xBF) ? 3 : 0;
+            String candidate = new String(bytes, start, bytes.length - start,
+                    java.nio.charset.StandardCharsets.UTF_8);
+            // UTF-8 替换字符检测：如果包含替换字符说明不是有效 UTF-8
+            if (candidate.indexOf('\uFFFD') < 0) return candidate;
+            return new String(bytes, java.nio.charset.Charset.forName("GBK"));
         } catch (Exception e) {
             return null;
         }
