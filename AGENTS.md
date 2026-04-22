@@ -137,6 +137,36 @@ zig build test                   # 运行测试
 
 **禁止提交未格式化的代码。**
 
+## CI 脚本规范
+
+### 脚本目录
+
+所有 CI 相关脚本放在 `scripts/` 目录下，禁止在 workflow YAML 中编写内联 shell 逻辑：
+
+- `scripts/package-artifacts.sh` — 将构建产物打包为发布归档
+- `scripts/generate-manifest.sh` — 生成 manifest.json 清单文件
+- `scripts/create-universal-macos.sh` — macOS aarch64 + x86_64 合并通用二进制
+
+### Workflow 文件
+
+- `.github/workflows/build.yml` — 构建测试（dev 分支触发）
+- `.github/workflows/release.yml` — 发布流程（tag 触发）
+
+### 编写规则
+
+- **脚本语言**：bash，使用 `set -euo pipefail`
+- **参数传递**：通过环境变量（`GITHUB_REF_NAME`、`GITHUB_SERVER_URL`、`GITHUB_REPOSITORY`），不使用命令行参数
+- **调用方式**：`bash scripts/xxx.sh`，不依赖文件执行权限
+- **注释**：每个脚本顶部必须包含用途说明和环境变量文档
+- **manifest 文件**：命名为 `manifest.json`，通过 heredoc + `jq '.'` 生成，确保 JSON 格式正确
+- **Node.js 版本**：两个 workflow 均设置 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true`
+
+### 分支与发布
+
+- **dev** 是开发分支，所有修改在 dev 上进行
+- **main** 禁止直接推送，只能通过合并 dev 更新
+- 发布流程：dev 修改 → 推送 dev → 合并到 main → 打 tag → 触发 release workflow
+
 ## 注意事项
 
 - **无 linter / type checker 配置**：Zig 编译器本身提供类型检查；格式化使用内置 `zig fmt`（无配置文件，风格固定）
