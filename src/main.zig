@@ -61,6 +61,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // 解析可选参数
     var lyrics_path: ?[]const u8 = null;
+    var volume_pct: u8 = 20;
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--lyrics")) {
@@ -70,11 +71,23 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 return;
             }
             lyrics_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--volume")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("错误: --volume 需要指定音量 (0-100)\n", .{});
+                return;
+            }
+            const vol = std.fmt.parseInt(u8, args[i], 10) catch {
+                std.debug.print("错误: --volume 参数无效 (需要 0-100 整数)\n", .{});
+                return;
+            };
+            volume_pct = vol;
         }
     }
 
     var p = try Player.init(allocator);
     defer p.deinit();
+    p.setVolume(@as(f32, @floatFromInt(volume_pct)) / 100.0);
 
     // 加载歌词（如果指定），支持本地文件和 HTTP(S) URL
     var has_lyrics = false;
@@ -247,9 +260,10 @@ fn printUsage() void {
 
 fn printHelp() void {
     std.debug.print("ZMusic Player - 网络音频播放器\n\n", .{});
-    std.debug.print("用法: zmusic-player play <URL或路径> [--lyrics <LRC文件路径>]\n\n", .{});
+    std.debug.print("用法: zmusic-player play <URL或路径> [--lyrics <LRC文件路径>] [--volume <0-100>]\n\n", .{});
     std.debug.print("选项:\n", .{});
-    std.debug.print("  --lyrics <路径>   加载 LRC 格式歌词文件\n\n", .{});
+    std.debug.print("  --lyrics <路径>      加载 LRC 格式歌词文件\n", .{});
+    std.debug.print("  --volume <0-100>     设置初始音量百分比，默认 20\n\n", .{});
     std.debug.print("播放控制:\n", .{});
     std.debug.print("  Space   播放 / 暂停\n", .{});
     std.debug.print("  q       停止并退出\n", .{});

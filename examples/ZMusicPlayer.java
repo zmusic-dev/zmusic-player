@@ -468,15 +468,20 @@ public class ZMusicPlayer {
 
         String source = args[1];
         String lyricsPath = null;
+        int volumePct = 20;
 
         for (int i = 2; i < args.length; i++) {
             if ("--lyrics".equals(args[i]) && i + 1 < args.length) {
                 lyricsPath = args[++i];
+            } else if ("--volume".equals(args[i]) && i + 1 < args.length) {
+                volumePct = Integer.parseInt(args[++i]);
+                volumePct = Math.max(0, Math.min(100, volumePct));
             }
         }
 
         // ---- 初始化播放器 ----
         ZMusicPlayer player = new ZMusicPlayer();
+        player.setVolume(volumePct / 100f);
         try {
             // 加载歌词（如果指定）
             boolean hasLyrics = false;
@@ -737,10 +742,11 @@ public class ZMusicPlayer {
     private static void printHelp() {
         System.out.println("ZMusic Player - 网络音频播放器");
         System.out.println();
-        System.out.println("用法: java me.zhenxin.zmusic.ZMusicPlayer play <URL或路径> [--lyrics <LRC路径>]");
+        System.out.println("用法: java me.zhenxin.zmusic.ZMusicPlayer play <URL或路径> [--lyrics <LRC路径>] [--volume <0-100>]");
         System.out.println();
         System.out.println("选项:");
-        System.out.println("  --lyrics <路径>   加载 LRC 格式歌词文件（支持本地路径和 HTTP URL）");
+        System.out.println("  --lyrics <路径>    加载 LRC 格式歌词文件（支持本地路径和 HTTP URL）");
+        System.out.println("  --volume <0-100>   设置初始音量百分比，默认 20");
         System.out.println();
         System.out.println("播放控制:");
         System.out.println("  Space   播放 / 暂停");
