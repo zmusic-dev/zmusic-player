@@ -83,6 +83,12 @@ jobs:
           name: zmusic-x86_64-macos
           path: dist/x86_64
 
+      - name: Extract artifacts
+        run: |
+          mkdir -p dist/aarch64 dist/x86_64
+          tar xzf dist/aarch64/*.tar.gz -C dist/aarch64 --strip-components=1
+          tar xzf dist/x86_64/*.tar.gz -C dist/x86_64 --strip-components=1
+
       - name: Create universal binary
         run: |
           mkdir -p zig-out/bin zig-out/lib
