@@ -111,79 +111,135 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return;
     };
 
+    // 进入终端原始模式：关闭行缓冲和回显，支持非阻塞按键读取
+    platform.enterRawMode() catch {};
+    defer platform.restoreTerminal();
+
     // 主显示循环
-    // 单行 \r 原地刷新：进度 + 歌词合并在同一行
-    var prev_lyric_text: ?[]const u8 = null;
-    var last_displayed_sec: u32 = 0xFFFFFFFF;
-    // 停滞检测：流式播放时 ma_sound_at_end 可能过早返回 true，
-    // 改用位置停滞检测判断播放结束
+    // 固定 3 行显示区，全部用 \r + 光标上移原地刷新：
+    //   第 1 行：进度条
+    //   第 2 行：播放状态 + 时间 + 音量 + 歌词
+    //   第 3 行：控制提示
     var last_position_ms: u64 = 0;
     var stall_count: u32 = 0;
+    var seek_cooldown: u32 = 0;
+    var display_started = false;
 
     while (p.getState() == .playing or p.getState() == .paused) {
+        // 键盘控制
+        if (platform.readKey()) |key| {
+            switch (key) {
+                .space => {
+                    if (p.getState() == .playing) {
+                        p.pause() catch {};
+                    } else if (p.getState() == .paused) {
+                        p.@"resume"() catch {};
+                    }
+                },
+                .q => {
+                    p.stop();
+                    break;
+                },
+                .left => {
+                    const prog = p.getProgress();
+                    p.seek(if (prog.position_ms > 5000) prog.position_ms - 5000 else 0) catch {};
+                    seek_cooldown = 2;
+                },
+                .right => {
+                    const prog = p.getProgress();
+                    const target = prog.position_ms + 5000;
+                    if (target < prog.duration_ms) p.seek(target) catch {};
+                    seek_cooldown = 2;
+                },
+                .up => {
+                    p.setVolume(p.getVolume() + 0.1);
+                },
+                .down => {
+                    p.setVolume(p.getVolume() - 0.1);
+                },
+                .unknown => {},
+            }
+        }
+
         if (p.getState() == .playing) {
             const snd = p.sound orelse break;
             const progress = p.getProgress();
 
-            // 播放结束判断：声音标记结束且已播放超过 1 秒（正常结束）
             if (ma.ma_sound_at_end(snd) != 0 and progress.position_ms > 1000) {
                 if (p.on_track_ended) |cb| cb();
                 break;
             }
 
-            // 停滞检测：位置连续 3 秒不变则退出
-            if (progress.position_ms == last_position_ms) {
-                stall_count += 1;
-                if (stall_count >= 15) break;
-            } else {
+            if (seek_cooldown > 0) {
+                seek_cooldown -= 1;
                 stall_count = 0;
-            }
-            last_position_ms = progress.position_ms;
-        }
-
-        const progress = p.getProgress();
-        const lyric_line = p.getCurrentLyric();
-        const current_text = if (lyric_line) |l| l.text else null;
-
-        const lyric_changed = blk: {
-            if (prev_lyric_text == null and current_text == null) break :blk false;
-            if (prev_lyric_text == null or current_text == null) break :blk true;
-            break :blk !std.mem.eql(u8, prev_lyric_text.?, current_text.?);
-        };
-
-        const current_sec = @as(u32, @intCast(progress.position_ms / 1000));
-        const sec_changed = current_sec != last_displayed_sec;
-
-        if (lyric_changed or sec_changed) {
-            prev_lyric_text = current_text;
-            last_displayed_sec = current_sec;
-
-            const state_icon = switch (p.getState()) {
-                .playing => "▶",
-                .paused => "⏸",
-                else => "■",
-            };
-            const pos_min = progress.position_ms / 60000;
-            const pos_sec = (progress.position_ms % 60000) / 1000;
-            const dur_min = progress.duration_ms / 60000;
-            const dur_sec = (progress.duration_ms % 60000) / 1000;
-
-            std.debug.print("\r\x1b[2K{s} {d:0>2}:{d:0>2}/{d:0>2}:{d:0>2}", .{
-                state_icon, pos_min, pos_sec, dur_min, dur_sec,
-            });
-            if (lyric_line) |l| {
-                if (l.translation) |t| {
-                    std.debug.print("  {s} · {s}", .{ l.text, t });
+                last_position_ms = progress.position_ms;
+            } else {
+                if (progress.position_ms == last_position_ms) {
+                    stall_count += 1;
+                    if (stall_count >= 15) break;
                 } else {
-                    std.debug.print("  {s}", .{l.text});
+                    stall_count = 0;
                 }
+                last_position_ms = progress.position_ms;
             }
         }
 
+         // ---- 重绘 3 行显示区 ----
+         const progress = p.getProgress();
+         const lyric_line = p.getCurrentLyric();
+
+        if (display_started) {
+            std.debug.print("\x1b[u", .{}); // 恢复到显示区起始位置
+        } else {
+            std.debug.print("\x1b[s", .{}); // 首次：保存当前光标位置作为显示区起点
+        }
+
+        // 第 1 行：进度条
+        const pct_f32: f32 = if (progress.duration_ms > 0)
+            @as(f32, @floatFromInt(progress.position_ms)) / @as(f32, @floatFromInt(progress.duration_ms))
+        else
+            0;
+        const bar_width: usize = 40;
+        const raw_filled: usize = @as(usize, @intFromFloat(pct_f32 * @as(f32, @floatFromInt(bar_width))));
+        const filled: usize = if (progress.position_ms > 0) @max(raw_filled, 1) else 0;
+        std.debug.print("\r\x1b[2K进度：[", .{});
+        for (0..bar_width) |j| {
+            if (j < filled) std.debug.print("█", .{}) else std.debug.print("░", .{});
+        }
+        std.debug.print("]\n", .{});
+
+        // 第 2 行：播放状态 + 时间 + 音量 + 歌词
+        const state_icon = switch (p.getState()) {
+            .playing => "▶",
+            .paused => "⏸",
+            else => "■",
+        };
+        const pos_min = progress.position_ms / 60000;
+        const pos_sec = (progress.position_ms % 60000) / 1000;
+        const dur_min = progress.duration_ms / 60000;
+        const dur_sec = (progress.duration_ms % 60000) / 1000;
+        const vol_pct = @as(u32, @intFromFloat(p.getVolume() * 100));
+
+        std.debug.print("\r\x1b[2K{s} {d:0>2}:{d:0>2}/{d:0>2}:{d:0>2}", .{
+            state_icon, pos_min, pos_sec, dur_min, dur_sec,
+        });
+        if (vol_pct != 100) {
+            std.debug.print(" vol:{d:0>2}%", .{vol_pct});
+        }
+        if (lyric_line) |l| {
+            std.debug.print("  {s}", .{l.text});
+        }
+        std.debug.print("\n", .{});
+
+        // 第 3 行：控制提示
+        std.debug.print("\r\x1b[2KSpace:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量\n", .{});
+
+        display_started = true;
         platform.sleepMs(200);
     }
 
-    std.debug.print("\n", .{});
+    if (display_started) std.debug.print("\n", .{});
 }
 
 fn printUsage() void {
@@ -197,7 +253,12 @@ fn printHelp() void {
     std.debug.print("ZMusic Player - 网络音频播放器\n\n", .{});
     std.debug.print("用法: zmusic-player play <URL或路径> [--lyrics <LRC文件路径>]\n\n", .{});
     std.debug.print("选项:\n", .{});
-    std.debug.print("  --lyrics <路径>   加载 LRC 格式歌词文件\n", .{});
+    std.debug.print("  --lyrics <路径>   加载 LRC 格式歌词文件\n\n", .{});
+    std.debug.print("播放控制:\n", .{});
+    std.debug.print("  Space   播放 / 暂停\n", .{});
+    std.debug.print("  q       停止并退出\n", .{});
+    std.debug.print("  ←/→     快退/快进 5 秒\n", .{});
+    std.debug.print("  ↑/↓     音量增减 10%\n", .{});
 }
 
 /// 通过 HTTP 下载 URL 内容到堆分配的缓冲区。
