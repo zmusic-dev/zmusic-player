@@ -22,6 +22,9 @@ const HttpClient = @import("net/http_client.zig").HttpClient;
 pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.smp_allocator;
 
+    // Windows 控制台初始化：设置 UTF-8 代码页和 ANSI 转义序列支持
+    platform.initWindowsConsole();
+
     var iter = if (builtin.os.tag == .windows)
         try std.process.Args.Iterator.initAllocator(init.args, allocator)
     else
@@ -93,7 +96,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var has_lyrics = false;
     if (lyrics_path) |path| {
         const is_url = std.mem.startsWith(u8, path, "http://") or std.mem.startsWith(u8, path, "https://");
-        const lrc_content: []u8 = result: {
+        const lrc_raw: []u8 = result: {
             if (is_url) {
                 break :result downloadContent(allocator, path) catch |err| {
                     std.debug.print("无法下载歌词 '{s}': {}\n", .{ path, err });
@@ -106,8 +109,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 };
             }
         };
-        defer allocator.free(lrc_content);
-        p.loadLyrics(lrc_content) catch |err| {
+        defer allocator.free(lrc_raw);
+        // GBK 等非 UTF-8 编码的歌词需要转换为 UTF-8
+        const lrc_utf8 = platform.ensureUtf8(allocator, lrc_raw) catch lrc_raw;
+        defer if (lrc_utf8.ptr != lrc_raw.ptr) allocator.free(lrc_utf8);
+        p.loadLyrics(lrc_utf8) catch |err| {
             std.debug.print("歌词解析失败: {}\n", .{err});
             return;
         };
