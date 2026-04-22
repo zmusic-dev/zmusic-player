@@ -208,18 +208,40 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const progress = p.getProgress();
         const lyric_line = p.getCurrentLyric();
 
-        // 第 1 行：进度条
+        // 第 1 行：进度条（亚字符精度，使用 Unicode 左侧分块字符）
         const pct_f32: f32 = if (progress.duration_ms > 0)
             @as(f32, @floatFromInt(progress.position_ms)) / @as(f32, @floatFromInt(progress.duration_ms))
         else
             0;
         const bar_width: usize = 40;
-        const filled: usize = @as(usize, @intFromFloat(pct_f32 * @as(f32, @floatFromInt(bar_width))));
-        std.debug.print("\r\x1b[2K进度：[", .{});
+        const sub_blocks = [8][]const u8{ "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█" };
+        const total_sub: i32 = @intFromFloat(pct_f32 * @as(f32, @floatFromInt(bar_width * 8)));
+        var bar_buf: [256]u8 = undefined;
+        var bar_len: usize = 0;
+        const prefix = "进度：[";
+        @memcpy(bar_buf[0..prefix.len], prefix);
+        bar_len = prefix.len;
         for (0..bar_width) |j| {
-            if (j < filled) std.debug.print("█", .{}) else std.debug.print("░", .{});
+            const sub: i32 = total_sub - @as(i32, @intCast(j * 8));
+            if (sub >= 8) {
+                const ch = "█";
+                @memcpy(bar_buf[bar_len .. bar_len + ch.len], ch);
+                bar_len += ch.len;
+            } else if (sub > 0) {
+                const ch = sub_blocks[@intCast(sub - 1)];
+                @memcpy(bar_buf[bar_len .. bar_len + ch.len], ch);
+                bar_len += ch.len;
+            } else {
+                bar_buf[bar_len] = ' ';
+                bar_len += 1;
+            }
         }
-        std.debug.print("]\n", .{});
+        bar_buf[bar_len] = ']';
+        bar_len += 1;
+        // 用空格填满行尾，覆盖上一帧可能残留的字符
+        @memset(bar_buf[bar_len .. bar_len + 20], ' ');
+        bar_len += 20;
+        const bar_slice = bar_buf[0..bar_len];
 
         // 第 2 行：播放状态 + 时间 + 音量 + 歌词
         const state_icon = switch (p.getState()) {
@@ -233,22 +255,52 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const dur_sec = (progress.duration_ms % 60000) / 1000;
         const vol_pct = @as(u32, @intFromFloat(p.getVolume() * 100));
 
-        std.debug.print("\r\x1b[2K{s} {d:0>2}:{d:0>2}/{d:0>2}:{d:0>2}", .{
+        var line2_buf: [512]u8 = undefined;
+        const line2 = std.fmt.bufPrint(&line2_buf, "{s} {d:0>2}:{d:0>2}/{d:0>2}:{d:0>2}", .{
             state_icon, pos_min, pos_sec, dur_min, dur_sec,
-        });
-        if (vol_pct != 100) {
-            std.debug.print(" vol:{d:0>2}%", .{vol_pct});
-        }
-        if (lyric_line) |l| {
-            std.debug.print("  {s}", .{l.text});
-        }
-        std.debug.print("\n", .{});
+        }) catch "";
 
         // 第 3 行：控制提示
-        std.debug.print("\r\x1b[2KSpace:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量\n", .{});
+        const help_text = "Space:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量";
 
-        // 光标上移 3 行，回到显示区起点，下一帧原地刷新
-        std.debug.print("\x1b[3A", .{});
+        // 拼接完整的 3 行内容，一次性输出避免闪烁
+        var frame_buf: [1024]u8 = undefined;
+        var frame_len: usize = 0;
+        // 辅助：追加字节到 frame_buf
+        const appendBuf = struct {
+            fn append(buf: []u8, len: *usize, data: []const u8) void {
+                @memcpy(buf[len.* .. len.* + data.len], data);
+                len.* += data.len;
+            }
+        }.append;
+        // 辅助：追加填充空格
+        const appendPad = struct {
+            fn pad(buf: []u8, len: *usize, n: usize) void {
+                @memset(buf[len.* .. len.* + n], ' ');
+                len.* += n;
+            }
+        }.pad;
+
+        // \r 回到行首覆写第 1 行
+        appendBuf(&frame_buf, &frame_len, "\r");
+        appendBuf(&frame_buf, &frame_len, bar_slice);
+        appendBuf(&frame_buf, &frame_len, "\n\r");
+        appendBuf(&frame_buf, &frame_len, line2);
+        if (vol_pct != 100) {
+            const vol_str = std.fmt.bufPrint(line2_buf[line2.len..], " vol:{d:0>2}%", .{vol_pct}) catch "";
+            appendBuf(&frame_buf, &frame_len, vol_str);
+        }
+        if (lyric_line) |l| {
+            appendBuf(&frame_buf, &frame_len, "  ");
+            appendBuf(&frame_buf, &frame_len, l.text);
+        }
+        appendPad(&frame_buf, &frame_len, 20);
+        appendBuf(&frame_buf, &frame_len, "\n\r");
+        appendBuf(&frame_buf, &frame_len, help_text);
+        appendPad(&frame_buf, &frame_len, 20);
+        appendBuf(&frame_buf, &frame_len, "\n\x1b[3A");
+
+        std.debug.print("{s}", .{frame_buf[0..frame_len]});
 
         display_started = true;
         platform.sleepMs(200);

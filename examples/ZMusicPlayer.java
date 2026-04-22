@@ -572,13 +572,20 @@ public class ZMusicPlayer {
                 // 第 1 行：进度条
                 float pct = duration > 0 ? (float) position / duration : 0f;
                 int barWidth = 40;
-                int filled = (int) (pct * barWidth);
-                StringBuilder bar = new StringBuilder("\r\u001B[2K进度：[");
+                // 亚字符精度进度条，使用 Unicode 左侧分块字符
+                char[] subBlocks = {'▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'};
+                int totalSub = (int) (pct * barWidth * 8);
+                StringBuilder frame = new StringBuilder(256);
+                frame.append("\r进度：[");
                 for (int j = 0; j < barWidth; j++) {
-                    bar.append(j < filled ? '█' : '░');
+                    int sub = totalSub - j * 8;
+                    if (sub >= 8) frame.append('█');
+                    else if (sub > 0) frame.append(subBlocks[sub - 1]);
+                    else frame.append(' ');
                 }
-                bar.append(']');
-                System.out.println(bar);
+                frame.append(']');
+                // 填充空格覆盖上一帧残留字符
+                frame.append("                    ");
 
                 // 第 2 行：播放状态 + 时间 + 音量 + 歌词
                 String stateIcon = switch (player.getState()) {
@@ -592,20 +599,20 @@ public class ZMusicPlayer {
                 long durSec = (duration % 60000) / 1000;
                 int volPct = (int) (player.getVolume() * 100);
 
-                System.out.printf("\r\u001B[2K%s %02d:%02d/%02d:%02d", stateIcon, posMin, posSec, durMin, durSec);
-                if (volPct != 100) System.out.printf(" vol:%02d%%", volPct);
+                frame.append("\n\r").append(String.format("%s %02d:%02d/%02d:%02d", stateIcon, posMin, posSec, durMin, durSec));
+                if (volPct != 100) frame.append(String.format(" vol:%02d%%", volPct));
 
                 String lyric = player.getCurrentLyric();
                 if (lyric != null && !lyric.isEmpty()) {
-                    System.out.print("  " + lyric);
+                    frame.append("  ").append(lyric);
                 }
-                System.out.println();
+                frame.append("                    ");
 
                 // 第 3 行：控制提示
-                System.out.print("\r\u001B[2KSpace:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量\n");
+                frame.append("\n\rSpace:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量                    ");
+                frame.append("\n\u001B[3A");
 
-                // 光标上移 3 行，回到显示区起点
-                System.out.print("\u001B[3A");
+                System.out.print(frame);
                 System.out.flush();
 
                 displayStarted = true;
