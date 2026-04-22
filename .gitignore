@@ -13,9 +13,22 @@ zig-out/
 # IDE - VSCode
 .vscode/
 
+# Java
+*.class
+*.jar
+*.war
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LSP
+.cache/
+.clangd/
+compile_commands.json
+.project
+.classpath
+.settings/
+
 # Claude Code
 .claude/*.local.*
-
-# MCP
-.playwright-mcp/
-.playwright-cli/

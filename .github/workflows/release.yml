@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+          - os: windows-latest
+            target: x86_64-windows-gnu
+          - os: macos-latest
+            target: aarch64-macos
+          - os: macos-15
+            target: x86_64-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - uses: jdx/mise-action@v4
+
+      - name: Configure Xcode
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+
+      - name: Test
+        run: zig build test -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          version="${GITHUB_REF_NAME}"
+          mkdir -p "zmusic-player-${version}-${{ matrix.target }}"
+          cp -r zig-out/bin/ zig-out/lib/ "zmusic-player-${version}-${{ matrix.target }}/"
+          tar czf "zmusic-player-${version}-${{ matrix.target }}.tar.gz" "zmusic-player-${version}-${{ matrix.target }}"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          $dir = "zmusic-player-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $dir
+          Copy-Item -Recurse -Path zig-out/bin/*, zig-out/lib/* -Destination $dir
+          Compress-Archive -Path $dir -DestinationPath "zmusic-player-$version-${{ matrix.target }}.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: zmusic-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.zip
+
+  # macOS universal binary: lipo merge aarch64 + x86_64
+  macos-universal:
+    needs: build
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: zmusic-aarch64-macos
+          path: dist/aarch64
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: zmusic-x86_64-macos
+          path: dist/x86_64
+
+      - name: Create universal binary
+        run: |
+          mkdir -p zig-out/bin zig-out/lib
+          for bin in dist/aarch64/bin/*; do
+            name=$(basename "$bin")
+            lipo -create "dist/aarch64/bin/$name" "dist/x86_64/bin/$name" -output "zig-out/bin/$name"
+          done
+          for lib in dist/aarch64/lib/*; do
+            name=$(basename "$lib")
+            lipo -create "dist/aarch64/lib/$name" "dist/x86_64/lib/$name" -output "zig-out/lib/$name"
+          done
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME}"
+          mkdir -p "zmusic-player-${version}-universal-macos"
+          cp -r zig-out/bin/ zig-out/lib/ "zmusic-player-${version}-universal-macos/"
+          tar czf "zmusic-player-${version}-universal-macos.tar.gz" "zmusic-player-${version}-universal-macos"
+
+      - name: Upload universal artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: zmusic-universal-macos
+          path: |
+            *.tar.gz
+
+  release:
+    needs: [build, macos-universal]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Determine prerelease
+        id: prerelease
+        run: |
+          if [[ "${GITHUB_REF_NAME}" =~ -(alpha|beta|rc|pre)\. ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
