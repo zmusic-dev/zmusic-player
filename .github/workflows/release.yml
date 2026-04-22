@@ -41,31 +41,13 @@ jobs:
       - name: Test
         run: zig build test -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
 
-      - name: Package (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          version="${GITHUB_REF_NAME}"
-          mkdir -p "zmusic-player-${version}-${{ matrix.target }}"
-          cp -r zig-out/bin/ zig-out/lib/ "zmusic-player-${version}-${{ matrix.target }}/"
-          tar czf "zmusic-player-${version}-${{ matrix.target }}.tar.gz" "zmusic-player-${version}-${{ matrix.target }}"
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME
-          $dir = "zmusic-player-$version-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path $dir
-          Copy-Item -Recurse -Path zig-out/bin/*, zig-out/lib/* -Destination $dir
-          Compress-Archive -Path $dir -DestinationPath "zmusic-player-$version-${{ matrix.target }}.zip"
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: zmusic-${{ matrix.target }}
           path: |
-            *.tar.gz
-            *.zip
+            zig-out/bin/
+            zig-out/lib/
 
   # macOS universal binary: lipo merge aarch64 + x86_64
   macos-universal:
@@ -83,12 +65,6 @@ jobs:
           name: zmusic-x86_64-macos
           path: dist/x86_64
 
-      - name: Extract artifacts
-        run: |
-          mkdir -p dist/aarch64 dist/x86_64
-          tar xzf dist/aarch64/*.tar.gz -C dist/aarch64 --strip-components=1
-          tar xzf dist/x86_64/*.tar.gz -C dist/x86_64 --strip-components=1
-
       - name: Create universal binary
         run: |
           mkdir -p zig-out/bin zig-out/lib
@@ -101,19 +77,13 @@ jobs:
             lipo -create "dist/aarch64/lib/$name" "dist/x86_64/lib/$name" -output "zig-out/lib/$name"
           done
 
-      - name: Package
-        run: |
-          version="${GITHUB_REF_NAME}"
-          mkdir -p "zmusic-player-${version}-universal-macos"
-          cp -r zig-out/bin/ zig-out/lib/ "zmusic-player-${version}-universal-macos/"
-          tar czf "zmusic-player-${version}-universal-macos.tar.gz" "zmusic-player-${version}-universal-macos"
-
       - name: Upload universal artifacts
         uses: actions/upload-artifact@v7
         with:
           name: zmusic-universal-macos
           path: |
-            *.tar.gz
+            zig-out/bin/
+            zig-out/lib/
 
   release:
     needs: [build, macos-universal]
@@ -123,20 +93,66 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-          merge-multiple: true
 
-      - name: Determine prerelease
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME}"
+          for dir in artifacts/zmusic-*; do
+            name=$(basename "$dir")
+            if [[ "$name" == *windows* ]]; then
+              cd "$dir" && zip -r "../../${name}-${version}.zip" . && cd -
+            else
+              tar czf "${name}-${version}.tar.gz" -C "$dir" .
+            fi
+          done
+
+      - name: Generate manifest
         id: prerelease
         run: |
-          if [[ "${GITHUB_REF_NAME}" =~ -(alpha|beta|rc|pre)\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          version="${GITHUB_REF_NAME}"
+          server_url="${{ github.server_url }}"
+          repo="${{ github.repository }}"
+          base_url="${server_url}/${repo}/releases/download/${version}"
+
+          is_prerelease="false"
+          if [[ "${version}" =~ -(alpha|beta|rc|pre)\. ]]; then
+            is_prerelease="true"
           fi
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
+
+          echo '{' > manifest.json
+          echo "  \"version\": \"${version}\"," >> manifest.json
+          echo "  \"prerelease\": ${is_prerelease}," >> manifest.json
+          echo '  \"files\": [' >> manifest.json
+
+          first=true
+          for f in *.tar.gz *.zip; do
+            [ -f "$f" ] || continue
+            $first || echo ',' >> manifest.json
+            first=false
+            sha256=$(sha256sum "$f" | cut -d' ' -f1)
+            size=$(stat -c%s "$f")
+            target=$(echo "$f" | sed -E 's/^zmusic-([^-]+-[^-]+)-.*/\1/')
+            cat >> manifest.json <<ENTRY
+            {
+              \"name\": \"${f}\",
+              \"target\": \"${target}\",
+              \"sha256\": \"${sha256}\",
+              \"size\": ${size},
+              \"url\": \"${base_url}/${f}\"
+            }
+ENTRY
+          done
+
+          echo '  ]' >> manifest.json
+          echo '}' >> manifest.json
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**
+          files: |
+            *.tar.gz
+            *.zip
+            manifest.json
           generate_release_notes: true
           prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
