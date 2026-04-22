@@ -189,20 +189,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
         const progress = p.getProgress();
         const lyric_line = p.getCurrentLyric();
 
-        if (display_started) {
-            std.debug.print("\x1b[u", .{}); // 恢复到显示区起始位置
-        } else {
-            std.debug.print("\x1b[s", .{}); // 首次：保存当前光标位置作为显示区起点
-        }
-
         // 第 1 行：进度条
         const pct_f32: f32 = if (progress.duration_ms > 0)
             @as(f32, @floatFromInt(progress.position_ms)) / @as(f32, @floatFromInt(progress.duration_ms))
         else
             0;
         const bar_width: usize = 40;
-        const raw_filled: usize = @as(usize, @intFromFloat(pct_f32 * @as(f32, @floatFromInt(bar_width))));
-        const filled: usize = if (progress.position_ms > 0) @max(raw_filled, 1) else 0;
+        const filled: usize = @as(usize, @intFromFloat(pct_f32 * @as(f32, @floatFromInt(bar_width))));
         std.debug.print("\r\x1b[2K进度：[", .{});
         for (0..bar_width) |j| {
             if (j < filled) std.debug.print("█", .{}) else std.debug.print("░", .{});
@@ -234,6 +227,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         // 第 3 行：控制提示
         std.debug.print("\r\x1b[2KSpace:暂停/播放  q:退出  ←→:快退/快进  ↑↓:音量\n", .{});
+
+        // 光标上移 3 行，回到显示区起点，下一帧原地刷新
+        std.debug.print("\x1b[3A", .{});
 
         display_started = true;
         platform.sleepMs(200);
