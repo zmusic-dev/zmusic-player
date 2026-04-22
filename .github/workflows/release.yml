@@ -93,6 +93,21 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
+<<<<<<< HEAD
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME}"
+          for dir in artifacts/zmusic-*; do
+            name=$(basename "$dir")
+            if [[ "$name" == *windows* ]]; then
+              cd "$dir" && zip -r "../../${name}-${version}.zip" . && cd -
+            else
+              tar czf "${name}-${version}.tar.gz" -C "$dir" .
+            fi
+          done
+=======
+>>>>>>> dev
 
       - name: Package
         run: |
@@ -106,14 +121,46 @@ jobs:
             fi
           done
 
-      - name: Determine prerelease
+      - name: Generate manifest
         id: prerelease
         run: |
-          if [[ "${GITHUB_REF_NAME}" =~ -(alpha|beta|rc|pre)\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          version="${GITHUB_REF_NAME}"
+          server_url="${{ github.server_url }}"
+          repo="${{ github.repository }}"
+          base_url="${server_url}/${repo}/releases/download/${version}"
+
+          is_prerelease="false"
+          if [[ "${version}" =~ -(alpha|beta|rc|pre)\. ]]; then
+            is_prerelease="true"
           fi
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
+
+          echo '{' > manifest.json
+          echo "  \"version\": \"${version}\"," >> manifest.json
+          echo "  \"prerelease\": ${is_prerelease}," >> manifest.json
+          echo '  \"files\": [' >> manifest.json
+
+          first=true
+          for f in *.tar.gz *.zip; do
+            [ -f "$f" ] || continue
+            $first || echo ',' >> manifest.json
+            first=false
+            sha256=$(sha256sum "$f" | cut -d' ' -f1)
+            size=$(stat -c%s "$f")
+            target=$(echo "$f" | sed -E 's/^zmusic-([^-]+-[^-]+)-.*/\1/')
+            cat >> manifest.json <<ENTRY
+            {
+              \"name\": \"${f}\",
+              \"target\": \"${target}\",
+              \"sha256\": \"${sha256}\",
+              \"size\": ${size},
+              \"url\": \"${base_url}/${f}\"
+            }
+ENTRY
+          done
+
+          echo '  ]' >> manifest.json
+          echo '}' >> manifest.json
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -121,5 +168,6 @@ jobs:
           files: |
             *.tar.gz
             *.zip
+            manifest.json
           generate_release_notes: true
           prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
