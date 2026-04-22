@@ -53,6 +53,8 @@ jobs:
     runs-on: macos-latest
 
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v8
         with:
           name: zmusic-aarch64-macos
@@ -64,16 +66,7 @@ jobs:
           path: dist/x86_64
 
       - name: Create universal binary
-        run: |
-          mkdir -p zig-out/bin zig-out/lib
-          for bin in dist/aarch64/bin/*; do
-            name=$(basename "$bin")
-            lipo -create "dist/aarch64/bin/$name" "dist/x86_64/bin/$name" -output "zig-out/bin/$name"
-          done
-          for lib in dist/aarch64/lib/*; do
-            name=$(basename "$lib")
-            lipo -create "dist/aarch64/lib/$name" "dist/x86_64/lib/$name" -output "zig-out/lib/$name"
-          done
+        run: bash scripts/create-universal-macos.sh
 
       - name: Upload universal artifacts
         uses: actions/upload-artifact@v7
