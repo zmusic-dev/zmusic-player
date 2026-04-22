@@ -31,6 +31,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/platform.zig"),
     });
 
+    // 歌词类型模块（共享库和测试共享）
+    const lyrics_types_mod = b.createModule(.{
+        .root_source_file = b.path("src/lyrics/types.zig"),
+    });
+
     // 共享库（JNI 桥接）
     // 编译为动态链接库（libzmusic.so / zmusic.dll），供 Java 层通过 System.loadLibrary 加载
     const shared_lib = b.addLibrary(.{
@@ -48,6 +53,21 @@ pub fn build(b: *std.Build) void {
     shared_lib.root_module.addImport("callback", b.createModule(.{
         .root_source_file = b.path("src/jni/callback.zig"),
     }));
+    // Player 模块（bridge.zig 通过 @import("player") 引入）
+    //
+    // 由于共享库根模块路径为 src/jni/，无法通过 ../player.zig 相对导入，
+    // 因此将 player.zig 作为独立命名模块引入，并配置其依赖的命名导入。
+    //
+    // player.zig 已修改为通过 @import("lyrics_types") 命名导入获取歌词类型定义，
+    // 而非相对导入 lyrics/types.zig，避免 types.zig 同时属于 player 模块和
+    // lyrics_types 模块（Zig 不允许同一文件属于多个模块）。
+    const player_mod_for_lib = b.createModule(.{
+        .root_source_file = b.path("src/player.zig"),
+    });
+    player_mod_for_lib.addImport("miniaudio", miniaudio_mod);
+    player_mod_for_lib.addImport("platform", platform_mod);
+    player_mod_for_lib.addImport("lyrics_types", lyrics_types_mod);
+    shared_lib.root_module.addImport("player", player_mod_for_lib);
     b.installArtifact(shared_lib);
 
     // 可执行文件
@@ -62,6 +82,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     configureModule(b, exe.root_module, target, miniaudio_mod, platform_mod);
+    // player.zig 使用 @import("lyrics_types")，exe 通过 main.zig 相对导入 player.zig，
+    // 因此 exe 模块也需要 lyrics_types 命名导入
+    exe.root_module.addImport("lyrics_types", lyrics_types_mod);
 
     b.installArtifact(exe);
 
@@ -87,13 +110,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     configureModule(b, main_tests.root_module, target, miniaudio_mod, platform_mod);
+    main_tests.root_module.addImport("lyrics_types", lyrics_types_mod);
     test_step.dependOn(&b.addRunArtifact(main_tests).step);
 
     // 歌词模块（应用和测试共享）
-    // 将歌词类型定义和解析器拆分为独立模块，避免代码重复
-    const lyrics_types_mod = b.createModule(.{
-        .root_source_file = b.path("src/lyrics/types.zig"),
-    });
+    // 歌词解析器模块
+    // 解析器依赖类型定义模块（lyrics_types_mod 已在共享库部分创建）
     const lyrics_parser_mod = b.createModule(.{
         .root_source_file = b.path("src/lyrics/parser.zig"),
     });

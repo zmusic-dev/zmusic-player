@@ -17,7 +17,7 @@
 const std = @import("std");
 const state = @import("state/player_state.zig");
 const queue = @import("queue/playlist.zig");
-const lyrics_types = @import("lyrics/types.zig");
+const lyrics_types = @import("lyrics_types");
 const lyrics_parser = @import("lyrics/parser.zig");
 const net = @import("net/http_client.zig");
 const streaming = @import("net/streaming.zig");
@@ -485,9 +485,11 @@ pub const Player = struct {
     /// 返回 `null` 表示无歌词或当前时间没有匹配的歌词。
     pub fn getCurrentLyric(self: *Player) ?LyricLine {
         const progress = self.getProgress();
-        const lrc = self.lyrics_data orelse return null;
-        const idx = lrc.getLineAt(progress.position_ms) orelse return null;
-        return lrc.lines.items[idx];
+        if (self.lyrics_data) |*lrc| {
+            const idx = lrc.getLineAt(progress.position_ms) orelse return null;
+            return lrc.lines.items[idx];
+        }
+        return null;
     }
 
     // ---- 回调注册 ----
