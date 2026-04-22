@@ -13,7 +13,7 @@ public class ZMusicPlayer {
 
     // 加载 Zig 编译生成的原生动态库
     static {
-        System.loadLibrary("zmusic-player");
+        System.loadLibrary("zmusic");
     }
 
     // 原生对象的句柄，用于在 JNI 调用中标识底层播放器实例

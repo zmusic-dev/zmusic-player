@@ -607,9 +607,10 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePollEvent(
     env: *jni.JNIEnv,
     obj: ?*anyopaque,
     handle: i64,
-) u32 {
+) i32 {
     _ = env;
     _ = obj;
     _ = handle;
-    return @intFromEnum(callback.pollEvent());
+    const event: u32 = @intFromEnum(callback.pollEvent());
+    return @bitCast(event);
 }

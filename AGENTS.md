@@ -141,6 +141,5 @@ zig build test                   # 运行测试
 
 - **无 linter / type checker 配置**：Zig 编译器本身提供类型检查；格式化使用内置 `zig fmt`（无配置文件，风格固定）
 - **CI**：GitHub Actions，Linux / Windows / macOS 三平台构建 + 测试（`.github/workflows/build.yml`）
-- **JNI bridge 当前为桩实现**：所有 native 方法返回 0 或空值，尚未接入实际播放引擎
 - **HttpClient 必须堆分配**：`std.Io.Threaded.io()` 捕获结构体指针，栈分配会导致悬空指针
 - **`PlaybackState.@"error"`**：`error` 是 Zig 保留字，必须使用 `@"error"` 语法
