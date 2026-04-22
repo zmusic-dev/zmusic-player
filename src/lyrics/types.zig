@@ -68,10 +68,15 @@ pub const Lyrics = struct {
 
     /// 释放所有已分配的内存
     ///
-    /// 依次释放元数据中的字符串（title/artist/album/author），
-    /// 然后释放歌词行列表。注意：歌词行中 `text` 和 `translation`
-    /// 字段指向的内存由 `parser` 模块管理，此处只释放列表容器本身。
+    /// 依次释放：
+    /// 1. 每行歌词的 text 和 translation 字符串（由 parser 分配的 owned 内存）
+    /// 2. 元数据中的字符串（title/artist/album/author）
+    /// 3. 歌词行列表容器
     pub fn deinit(self: *Lyrics) void {
+        for (self.lines.items) |line| {
+            self.allocator.free(line.text);
+            if (line.translation) |t| self.allocator.free(t);
+        }
         if (self.metadata.title) |v| self.allocator.free(v);
         if (self.metadata.artist) |v| self.allocator.free(v);
         if (self.metadata.album) |v| self.allocator.free(v);

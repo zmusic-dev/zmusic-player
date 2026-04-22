@@ -313,23 +313,27 @@ pub fn decoderReadCallback(
     pBytesRead: [*c]usize,
 ) callconv(.c) c_int {
     const decoder = pDecoder orelse return ma.MA_INVALID_ARGS;
-    // 通过 miniaudio 的 pUserData 恢复 StreamingSource 上下文
     const self: *StreamingSource = @ptrCast(@alignCast(decoder.*.pUserData orelse return ma.MA_INVALID_ARGS));
     const out: [*]u8 = @ptrCast(@alignCast(pBufferOut orelse return ma.MA_INVALID_ARGS));
 
     pBytesRead.* = 0;
 
     const offset = self.read_offset;
-    // acquire 内存序：确保能看到下载线程写入的数据
-    const available = self.write_pos.load(.acquire);
-    if (offset >= available) {
-        // 读取位置追上了写入位置
-        if (self.download_done.load(.acquire)) return ma.MA_AT_END;
-        // 下载尚未完成，告诉解码器数据暂时不可用，稍后重试
-        return ma.MA_BUSY;
+    var available = self.write_pos.load(.acquire);
+
+    // 数据未就绪时短暂等待下载线程补充数据。
+    // miniaudio decoder 不理解 MA_BUSY（会当作流结束），
+    // 因此必须在回调内阻塞等待，而非返回 MA_BUSY。
+    // 2ms 轮询间隔对音频线程影响可忽略。
+    while (offset >= available and !self.download_done.load(.acquire)) {
+        platform.sleepMs(2);
+        available = self.write_pos.load(.acquire);
     }
 
-    // 只读取已下载的部分，不会超过 write_pos
+    if (offset >= available) {
+        return ma.MA_AT_END;
+    }
+
     const readable = @min(bytesToRead, available - offset);
     @memcpy(out[0..readable], self.data[offset .. offset + readable]);
     self.read_offset = offset + readable;
@@ -361,19 +365,14 @@ pub fn decoderSeekCallback(
     const decoder = pDecoder orelse return ma.MA_INVALID_ARGS;
     const self: *StreamingSource = @ptrCast(@alignCast(decoder.*.pUserData orelse return ma.MA_INVALID_ARGS));
 
-    // 根据不同的定位起点计算绝对偏移量
     const abs_offset: usize = if (origin == ma.ma_seek_origin_start)
-        // 从头开始：偏移量必须非负
         if (byteOffset < 0) return ma.MA_INVALID_ARGS else @intCast(byteOffset)
     else if (origin == ma.ma_seek_origin_current)
-        // 从当前位置：允许正向或反向偏移，使用溢出检测安全的加法
         std.math.add(usize, self.read_offset, @intCast(byteOffset)) catch return ma.MA_INVALID_ARGS
     else if (origin == ma.ma_seek_origin_end)
-        // 从末尾：byteOffset 通常为负值（向前偏移），total_size + byteOffset 得到目标位置
         std.math.add(usize, self.total_size, @intCast(byteOffset)) catch return ma.MA_INVALID_ARGS
     else
         return ma.MA_NOT_IMPLEMENTED;
-    // 确保最终位置不超出缓冲区范围
     if (abs_offset > self.total_size) return ma.MA_INVALID_ARGS;
     self.read_offset = abs_offset;
     return ma.MA_SUCCESS;

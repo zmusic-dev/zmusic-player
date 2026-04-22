@@ -13,10 +13,18 @@
 //! ## 编码处理
 //!
 //! 中文 LRC 歌词文件常见 GBK 编码（尤其是国内音乐平台），本模块在解析前
-//! 自动检测编码：先验证 UTF-8 有效性，如果无效则尝试通过 iconv 将 GBK
-//! 转换为 UTF-8。iconv 在 Linux（glibc 内置）和 macOS（libiconv）上可用。
-//! Windows 目标暂不支持 GBK 自动转换（Zig 交叉编译工具链未包含 libiconv），
-//! 非 UTF-8 内容将原样传递给解析器尽力处理。
+//! 自动检测编码并进行转换。
+//!
+//! 检测策略（启发式）：
+//! 1. 先验证 UTF-8 有效性
+//! 2. 如果是合法 UTF-8 **且**包含 CJK 字符（U+4E00-U+9FFF 范围，3 字节 UTF-8
+//!    序列，首字节 0xE4-0xE9），视为真正的 UTF-8 中文内容
+//! 3. 如果是合法 UTF-8 但不含 CJK 字符（GBK 字节对恰好构成合法 2 字节
+//!    UTF-8 序列的常见情况），尝试 iconv GBK→UTF-8 转换
+//! 4. 如果不是合法 UTF-8，直接尝试 iconv GBK→UTF-8 转换
+//!
+//! iconv 在 Linux（glibc 内置）和 macOS（libiconv）上可用。
+//! Windows 目标暂不支持 GBK 自动转换（Zig 交叉编译工具链未包含 libiconv）。
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -47,20 +55,24 @@ extern fn iconv_close(cd: *IconvT) c_int;
 
 /// 将非 UTF-8 内容从 GBK 转换为 UTF-8。
 ///
-/// 采用启发式策略：先用 `std.unicode.utf8Validate` 检查 UTF-8 有效性，
-/// 如果无效则假设为 GBK 编码并通过 iconv 转换。转换失败时返回原始内容，
-/// 让后续解析逻辑尽力处理（不会导致整体失败）。
+/// GBK 字节对（如 `\xd4\xad`）恰好可能构成合法的 2 字节 UTF-8 序列，
+/// 导致单纯的 UTF-8 验证无法区分 GBK 和 UTF-8。因此采用如下启发式策略：
 ///
-/// Windows 目标不支持 iconv，非 UTF-8 内容将原样返回。
+/// 1. 验证 UTF-8 有效性
+/// 2. 合法 UTF-8 且含 CJK 字符 → 真正的 UTF-8 中文，直接返回
+/// 3. 合法 UTF-8 但无 CJK 字符 → 可能是 GBK 伪装，尝试 iconv 转换
+/// 4. 不合法 UTF-8 → 直接尝试 iconv 转换
 ///
-/// 参数：
-///   `allocator` - 内存分配器，用于分配转换后的 UTF-8 缓冲区
-///   `content`   - 原始 LRC 文件内容
-///
-/// 返回：UTF-8 编码的内容切片。如果是新分配的缓冲区，调用方负责释放。
+/// CJK 检测原理：中日韩统一表意文字（U+4E00-U+9FFF）在 UTF-8 中编码为
+/// 3 字节序列，首字节为 0xE4-0xE9。真正的中文 UTF-8 内容必然包含这些字节，
+/// 而 GBK 内容误判为 UTF-8 时只会产生 2 字节序列（U+0080-U+07FF 范围，
+/// 如西里尔字母、希伯来字母等）。
 fn ensureUtf8(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
-    // 如果已经是合法 UTF-8，直接返回
-    if (std.unicode.utf8ValidateSlice(content)) return content;
+    const is_valid_utf8 = std.unicode.utf8ValidateSlice(content);
+    const has_cjk = containsCjkBytes(content);
+
+    // 合法 UTF-8 且含 CJK 字符 → 真正的 UTF-8 中文内容
+    if (is_valid_utf8 and has_cjk) return content;
 
     // Windows 目标不链接 iconv，非 UTF-8 内容原样返回
     if (!has_iconv) return content;
@@ -69,8 +81,6 @@ fn ensureUtf8(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
     const cd = iconv_open("UTF-8", "GBK") orelse return content;
     defer _ = iconv_close(cd);
 
-    // GBK → UTF-8 最坏情况下每个字节扩展为 3 字节（中文字符），
-    // 预留额外空间避免反复扩展
     const out_len = content.len * 3;
     const out_buf = try allocator.alloc(u8, out_len);
 
@@ -84,13 +94,32 @@ fn ensureUtf8(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
 
     const converted_len = out_len - out_left;
     if (converted_len == 0) {
-        // 转换失败（可能是非 GBK 编码），释放缓冲区并返回原始内容
         allocator.free(out_buf);
         return content;
     }
 
-    // 截断到实际转换长度
-    return allocator.realloc(out_buf, converted_len) catch out_buf[0..converted_len];
+    // 转换成功：检查转换结果是否比原始内容更像中文
+    // 如果转换后包含 CJK 字符，则采用转换结果；否则保留原始内容
+    if (containsCjkBytes(out_buf[0..converted_len])) {
+        return allocator.realloc(out_buf, converted_len) catch out_buf[0..converted_len];
+    }
+
+    // 转换结果不含 CJK，可能是非 GBK 编码的合法 UTF-8 文件
+    allocator.free(out_buf);
+    if (is_valid_utf8) return content;
+    return content;
+}
+
+/// 检测内容中是否包含 CJK 统一表意文字的 UTF-8 编码字节。
+///
+/// CJK 字符（U+4E00-U+9FFF）在 UTF-8 中编码为 3 字节序列，
+/// 首字节为 0xE4-0xE9。扫描内容中出现这些首字节即可判断
+/// 是否包含中文字符。
+fn containsCjkBytes(content: []const u8) bool {
+    for (content) |byte| {
+        if (byte >= 0xE4 and byte <= 0xE9) return true;
+    }
+    return false;
 }
 
 /// 解析中间态：原始歌词行
@@ -135,12 +164,11 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Lyrics {
     errdefer lyrics.deinit();
 
     var metadata = LrcMetadata{};
-    // raw_lines 是解析中间态，函数退出时释放其中所有文本内存
     var raw_lines = std.array_list.Managed(RawLine).init(allocator);
-    defer {
-        for (raw_lines.items) |item| allocator.free(item.text);
-        raw_lines.deinit();
-    }
+    // 注意：raw_lines 中的 text 内存会转移给 lyrics.lines，不在 defer 中释放。
+    // 仅释放 raw_lines 容器本身。未被转移的文本（如翻译配对中被跳过的行）
+    // 在配对循环中显式释放。
+    defer raw_lines.deinit();
 
     // 第一阶段：逐行扫描，提取元数据和带时间戳的歌词行
     var lines = std.mem.splitSequence(u8, converted_content, "\n");
@@ -181,33 +209,25 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Lyrics {
     std.mem.sort(RawLine, raw_lines.items, {}, cmpLines);
 
     // 第三阶段：翻译配对
+    // 所有 raw_lines 中的 text 指针将转移给 lyrics.lines（由 Lyrics.deinit 统一释放）
     var i: usize = 0;
     while (i < raw_lines.items.len) : (i += 1) {
         const current_ms = raw_lines.items[i].time_ms;
-        const current_text = raw_lines.items[i].text;
 
         var translation: ?[]const u8 = null;
         if (i + 1 < raw_lines.items.len) {
             const next_ms = raw_lines.items[i + 1].time_ms;
-            // 计算相邻两行的时间差，使用 i64 避免无符号减法回绕
             const diff: i64 = @as(i64, @intCast(next_ms)) - @as(i64, @intCast(current_ms));
-            // 翻译歌词的配对条件：时间差在 [0, 500ms] 范围内
-            // 500ms 阈值基于翻译歌词通常与原文几乎同时出现的惯例
             if (diff >= 0 and diff <= 500) {
+                // 下一行作为当前行的翻译，取出其 text 指针并从列表中移除
                 translation = raw_lines.items[i + 1].text;
-                // 配对成功后释放原文的 text 所有权（翻译行会接管显示），
-                // 因为当前行的 text 将直接使用 current_text 指针
-                allocator.free(raw_lines.items[i].text);
-                _ = raw_lines.orderedRemove(i);
+                _ = raw_lines.orderedRemove(i + 1);
             }
         }
 
         try lyrics.lines.append(.{
             .time_ms = current_ms,
-            // text 字段：如果存在翻译，使用 raw_lines 中对应行的 text（已排序配对后）；
-            // 否则使用原始的 current_text。这里的条件分支处理了 orderedRemove 后
-            // 索引可能偏移的情况
-            .text = if (translation != null) raw_lines.items[if (i > 0 and raw_lines.items[i - 1].time_ms == current_ms) i else i].text else current_text,
+            .text = raw_lines.items[i].text,
             .translation = translation,
         });
     }
