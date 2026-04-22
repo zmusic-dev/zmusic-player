@@ -501,13 +501,4 @@ public class ZMusicPlayer {
         };
     }
 
-    /**
-     * 终结器：作为资源释放的最后保障。
-     * 正常使用时应显式调用 destroy()，此方法仅防止资源泄漏。
-     */
-    @Override
-    protected void finalize() throws Throwable {
-        destroy();
-        super.finalize();
-    }
 }
