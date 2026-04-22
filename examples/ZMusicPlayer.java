@@ -172,35 +172,164 @@ public class ZMusicPlayer {
     // ---- 公开 API ----
     // 薄封装层，隐藏 JNI handle 参数，对外提供简洁的 Java 接口
 
+    /**
+     * 播放指定 URL 的音频。
+     *
+     * @param url 音频资源的 URL（支持本地文件路径和网络地址）
+     * @return 0 表示成功，非零表示错误码
+     */
     public int play(String url) { return nativePlay(handle, url); }
+
+    /**
+     * 暂停当前播放。
+     *
+     * @return 0 表示成功，非零表示错误码
+     */
     public int pause() { return nativePause(handle); }
+
+    /**
+     * 停止播放并释放音频资源。
+     *
+     * @return 0 表示成功，非零表示错误码
+     */
     public int stop() { return nativeStop(handle); }
+
+    /**
+     * 恢复已暂停的播放。
+     *
+     * @return 0 表示成功，非零表示错误码
+     */
     public int resume() { return nativeResume(handle); }
+
+    /**
+     * 跳转到指定播放位置。
+     *
+     * @param positionMs 目标位置（毫秒）
+     * @return 0 表示成功，非零表示错误码
+     */
     public int seek(long positionMs) { return nativeSeek(handle, positionMs); }
+
+    /**
+     * 获取当前播放状态。
+     *
+     * @return 状态码，参见 STATE_* 常量（0=停止, 1=加载中, 2=播放, 3=暂停, 4=错误）
+     */
     public int getState() { return nativeGetState(handle); }
+
+    /**
+     * 获取当前播放位置。
+     *
+     * @return 当前位置（毫秒）
+     */
     public long getPosition() { return nativeGetPosition(handle); }
+
+    /**
+     * 获取当前曲目的总时长。
+     *
+     * @return 总时长（毫秒）
+     */
     public long getDuration() { return nativeGetDuration(handle); }
+
+    /**
+     * 获取当前音量。
+     *
+     * @return 音量值（0.0 ~ 1.0）
+     */
     public float getVolume() { return nativeGetVolume(handle); }
+
+    /**
+     * 设置音量。
+     *
+     * @param volume 音量值（0.0 ~ 1.0）
+     * @return 0 表示成功，非零表示错误码
+     */
     public int setVolume(float volume) { return nativeSetVolume(handle, volume); }
 
+    /**
+     * 将曲目追加到播放队列末尾。
+     *
+     * @param url    音频资源 URL
+     * @param title  曲目标题
+     * @param artist 艺术家名称
+     */
     public void enqueue(String url, String title, String artist) {
         nativeEnqueue(handle, url, title, artist);
     }
+
+    /**
+     * 将曲目插入到当前播放曲目之后（"下一首播放"）。
+     *
+     * @param url    音频资源 URL
+     * @param title  曲目标题
+     * @param artist 艺术家名称
+     */
     public void enqueueNext(String url, String title, String artist) {
         nativeEnqueueNext(handle, url, title, artist);
     }
+
+    /**
+     * 移除播放队列中指定索引的曲目。
+     *
+     * @param index 要移除的曲目索引
+     */
     public void removeFromQueue(int index) { nativeRemoveFromQueue(handle, index); }
+
+    /** 清空播放队列中的所有曲目。 */
     public void clearQueue() { nativeClearQueue(handle); }
+
+    /** 跳到下一首曲目。 */
     public void playNext() { nativePlayNext(handle); }
+
+    /** 跳到上一首曲目。 */
     public void playPrevious() { nativePlayPrevious(handle); }
+
+    /**
+     * 跳到播放队列中指定索引的曲目并开始播放。
+     *
+     * @param index 目标曲目索引
+     */
     public void playAtIndex(int index) { nativePlayAtIndex(handle, index); }
+
+    /**
+     * 获取播放队列中的曲目数量。
+     *
+     * @return 队列大小
+     */
     public int getQueueSize() { return nativeGetQueueSize(handle); }
+
+    /**
+     * 获取当前播放曲目在队列中的索引。
+     *
+     * @return 当前索引
+     */
     public int getCurrentIndex() { return nativeGetCurrentIndex(handle); }
 
+    /**
+     * 加载 LRC 格式的歌词内容。
+     *
+     * @param lrcContent LRC 格式的歌词文本
+     */
     public void loadLyrics(String lrcContent) { nativeLoadLyrics(handle, lrcContent); }
+
+    /**
+     * 获取当前播放时间对应的歌词行文本。
+     *
+     * @return 当前歌词行，无歌词时返回空字符串
+     */
     public String getCurrentLyric() { return nativeGetCurrentLyric(handle); }
 
+    /**
+     * 设置循环模式。
+     *
+     * @param mode 循环模式（0=不循环, 1=单曲循环, 2=列表循环）
+     */
     public void setRepeatMode(int mode) { nativeSetRepeatMode(handle, mode); }
+
+    /**
+     * 启用或禁用随机播放。
+     *
+     * @param enabled true 启用随机播放，false 禁用
+     */
     public void setShuffle(boolean enabled) { nativeSetShuffle(handle, enabled); }
 
     // ---- 事件轮询 ----

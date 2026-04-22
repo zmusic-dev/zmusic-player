@@ -185,9 +185,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }
         }
 
-         // ---- 重绘 3 行显示区 ----
-         const progress = p.getProgress();
-         const lyric_line = p.getCurrentLyric();
+        // ---- 重绘 3 行显示区 ----
+        const progress = p.getProgress();
+        const lyric_line = p.getCurrentLyric();
 
         if (display_started) {
             std.debug.print("\x1b[u", .{}); // 恢复到显示区起始位置
@@ -310,10 +310,15 @@ fn downloadContent(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
 /// 参考 streaming.zig 中 StreamingWriter 的设计，但面向小文件场景简化了实现：
 /// 数据先写入 staging 暂存区，满后批量提交到 ArrayList。
 const BufferWriter = struct {
+    /// 数据累积目标，最终通过 toOwnedSlice 获取完整响应体
     list: std.array_list.Managed(u8),
+    /// 8KB 暂存区，作为 Writer 的底层缓冲区
     staging: [8192]u8,
+    /// 标准库 Writer 接口，供 HTTP 客户端写入响应数据
     writer: std.Io.Writer,
 
+    /// Writer.drain 回调：暂存区满时触发，将数据批量写入 list。
+    /// 此时 staging 中的数据已在 commit 中刷出，剩余数据直接追加到 list。
     fn drainFn(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         _ = splat;
         const self: *BufferWriter = @alignCast(@fieldParentPtr("writer", w));
@@ -326,11 +331,14 @@ const BufferWriter = struct {
         return total;
     }
 
+    /// Writer.flush 回调：将暂存区中残留的数据刷出到 list。
     fn flushFn(w: *std.Io.Writer) std.Io.Writer.Error!void {
         const self: *BufferWriter = @alignCast(@fieldParentPtr("writer", w));
         self.commit();
     }
 
+    /// Writer.rebase 回调：暂存区需要重新分配时触发。
+    /// 小文件场景下不支持保留数据（preserve > 0 视为错误）。
     fn rebaseFn(w: *std.Io.Writer, preserve: usize, capacity: usize) std.Io.Writer.Error!void {
         _ = capacity;
         const self: *BufferWriter = @alignCast(@fieldParentPtr("writer", w));
@@ -338,16 +346,25 @@ const BufferWriter = struct {
         if (preserve > 0) return error.WriteFailed;
     }
 
+    /// 将暂存区中已写入的数据批量提交到 list，并重置暂存区。
     fn commit(self: *BufferWriter) void {
         if (self.writer.end == 0) return;
         self.list.appendSlice(self.writer.buffer[0..self.writer.end]) catch return;
         self.writer.end = 0;
     }
 };
+/// 通过 C 标准库文件 I/O 读取本地文件到堆分配的缓冲区。
 ///
-/// 通过 extern 声明直接调用 C 标准库函数（项目已链接 libc），
+/// 使用 extern 声明直接调用 C 标准库函数（项目已链接 libc），
 /// 避免 Zig 0.16.0 I/O 子系统复杂的初始化流程。
 /// 限制最大 10MB，防止意外读取过大文件。
+///
+/// 参数：
+///   allocator - 用于分配文件内容缓冲区的分配器
+///   path      - 文件路径（不需要以 null 结尾）
+///
+/// 返回：文件内容的堆分配切片，调用方负责释放。
+/// 错误：FileNotFound（文件不存在/为空/大小获取失败）、FileTooBig（超过 10MB）。
 fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const max_size: usize = 10 * 1024 * 1024;
 
@@ -370,11 +387,17 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf[0..read_bytes];
 }
 
-// C 标准库文件 I/O 函数声明
+/// C 标准库文件 I/O 常量和函数声明。
+/// 通过 @extern 直接链接 libc，用于 readFileAlloc 中避免依赖 Zig I/O 子系统。
 const c_SEEK_END: c_int = 2;
 const c_SEEK_SET: c_int = 0;
+/// 打开文件，返回 FILE* 句柄（失败返回 null）
 const c_fopen = @extern(*const fn ([*:0]const u8, [*:0]const u8) callconv(.c) ?*anyopaque, .{ .name = "fopen" });
+/// 关闭文件句柄
 const c_fclose = @extern(*const fn (?*anyopaque) callconv(.c) c_int, .{ .name = "fclose" });
+/// 设置文件读写位置
 const c_fseek = @extern(*const fn (?*anyopaque, c_long, c_int) callconv(.c) c_int, .{ .name = "fseek" });
+/// 获取当前文件读写位置（用于计算文件大小）
 const c_ftell = @extern(*const fn (?*anyopaque) callconv(.c) c_long, .{ .name = "ftell" });
+/// 从文件读取数据到缓冲区
 const c_fread = @extern(*const fn (?*anyopaque, usize, usize, ?*anyopaque) callconv(.c) usize, .{ .name = "fread" });
