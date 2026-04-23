@@ -247,6 +247,10 @@ fn linkPlatformLibs(b: *std.Build, mod: *std.Build.Module, target: std.Build.Res
             // 显式添加 macOS SDK 框架搜索路径。
             // Zig 的 linkFramework 在某些环境（如 CI）下无法自动定位 SDK，
             // 需要通过 getSdk 获取路径后手动添加搜索路径。
+            // 显式添加 macOS SDK 框架搜索路径并链接 framework。
+            // Zig 的 linkFramework 在某些环境（如 CI）下无法自动定位 SDK，
+            // 需要通过 getSdk 获取路径后手动添加搜索路径，因此 framework 链接
+            // 必须在 SDK 路径获取成功后才能生效。
             if (std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result)) |sdk| {
                 mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
                 mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
@@ -254,10 +258,10 @@ fn linkPlatformLibs(b: *std.Build, mod: *std.Build.Module, target: std.Build.Res
                 // Zig 交叉编译 macOS 时 -lc 链接的是 Zig 自带 libc，不含 iconv。
                 // 需要显式链接系统的 libiconv（SDK 的 usr/lib/libiconv.tbd）。
                 mod.linkSystemLibrary("iconv", .{});
+                mod.linkFramework("CoreAudio", .{});
+                mod.linkFramework("AudioToolbox", .{});
+                mod.linkFramework("CoreFoundation", .{});
             }
-            mod.linkFramework("CoreAudio", .{});
-            mod.linkFramework("AudioToolbox", .{});
-            mod.linkFramework("CoreFoundation", .{});
         },
         else => {},
     }
