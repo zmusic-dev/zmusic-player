@@ -449,7 +449,8 @@ fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
     const buf = try allocator.alloc(u8, size);
     const read_bytes = c_fread(buf.ptr, 1, size, file);
-    return buf[0..read_bytes];
+    if (read_bytes == size) return buf;
+    return try allocator.realloc(buf, read_bytes);
 }
 
 /// C 标准库文件 I/O 常量和函数声明。

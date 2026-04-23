@@ -602,6 +602,10 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeSetRepeatMode(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
+    if (mode < 0 or mode > 2) {
+        callback.postEvent(&h.pending_event, .error_occurred);
+        return;
+    }
     h.player.playlist.setRepeatMode(@enumFromInt(mode));
 }
 

@@ -287,6 +287,7 @@ pub const Playlist = struct {
     fn regenerateShuffleOrder(self: *Playlist) !void {
         if (self.shuffle_order) |*so| so.deinit();
         var order = std.array_list.Managed(usize).init(self.allocator);
+        errdefer order.deinit();
 
         // 步骤 1：生成顺序索引序列 [0, 1, 2, ..., n-1]
         const n = self.tracks.items.len;
