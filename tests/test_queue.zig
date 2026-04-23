@@ -211,6 +211,12 @@ test "shuffle off keeps current track" {
     try pl.add(.{ .url = "a.mp3" });
     try pl.add(.{ .url = "b.mp3" });
     try pl.add(.{ .url = "c.mp3" });
+    try pl.add(.{ .url = "d.mp3" });
+    try pl.add(.{ .url = "e.mp3" });
+
+    // 使用列表循环模式，确保 next() 始终返回有效曲目，
+    // 避免 shuffle 将当前曲目置于序列末尾时 next() 返回 null
+    pl.setRepeatMode(.all);
 
     // 开启随机播放后前进一首
     pl.setShuffle(true);
