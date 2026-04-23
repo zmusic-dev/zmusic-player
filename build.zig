@@ -134,6 +134,29 @@ pub fn build(b: *std.Build) void {
     addModuleTest(b, test_step, target, optimize, miniaudio_mod, platform_mod, "tests/test_queue.zig", &.{
         .{ "queue", queue_mod },
     });
+
+    // Player 模块（需要 miniaudio C 源文件，因为 player.zig 的 deinit/stop 引用了 miniaudio 符号）
+    const player_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/player.zig"),
+    });
+    player_test_mod.addImport("miniaudio", miniaudio_mod);
+    player_test_mod.addImport("platform", platform_mod);
+    player_test_mod.addImport("lyrics_types", lyrics_types_mod);
+
+    const player_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_player.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    player_test.root_module.addImport("miniaudio", miniaudio_mod);
+    player_test.root_module.addImport("platform", platform_mod);
+    player_test.root_module.addImport("player", player_test_mod);
+    addMiniaudioCSources(b, player_test.root_module);
+    linkPlatformLibs(b, player_test.root_module, target);
+    test_step.dependOn(&b.addRunArtifact(player_test).step);
 }
 
 /// 创建 miniaudio 绑定模块。
