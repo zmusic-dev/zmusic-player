@@ -33,6 +33,7 @@ pub const HttpClient = struct {
     /// 返回：指向新创建的 HttpClient 的指针
     pub fn create(allocator: std.mem.Allocator) !*HttpClient {
         const self = try allocator.create(HttpClient);
+        errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             // Threaded.init 可能失败（例如线程创建失败），这里用默认配置

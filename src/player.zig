@@ -255,6 +255,12 @@ pub const Player = struct {
             return PlayerError.HttpError;
         };
         self.stream_source = src;
+        errdefer {
+            if (self.stream_source) |s| {
+                s.deinit();
+                self.stream_source = null;
+            }
+        }
 
         // 步骤 3：等待初始缓冲区填入足够数据
         src.waitInitialBuffer();
