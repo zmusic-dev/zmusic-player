@@ -100,8 +100,9 @@ pub const Playlist = struct {
     /// 用于"下一首播放"功能，将曲目插入到当前曲目的后面，
     /// 使其在当前曲目结束后立即播放。
     pub fn addNext(self: *Playlist, track: Track) !void {
-        const insert_pos = if (self.current_index + 1 <= self.tracks.items.len)
-            self.current_index + 1
+        const real_current = self.realIndex();
+        const insert_pos = if (real_current + 1 <= self.tracks.items.len)
+            real_current + 1
         else
             self.tracks.items.len;
         try self.tracks.insert(insert_pos, track);
@@ -138,8 +139,9 @@ pub const Playlist = struct {
     /// 返回当前播放位置处的曲目，队列为空或索引越界时返回 `null`。
     pub fn current(self: *Playlist) ?Track {
         if (self.tracks.items.len == 0) return null;
-        if (self.current_index >= self.tracks.items.len) return null;
-        return self.tracks.items[self.current_index];
+        const idx = self.realIndex();
+        if (idx >= self.tracks.items.len) return null;
+        return self.tracks.items[idx];
     }
 
     /// ## next — 前进到下一曲
@@ -197,10 +199,27 @@ pub const Playlist = struct {
     /// ## jumpTo — 跳转到指定索引的曲目
     ///
     /// 直接设置播放位置到给定索引并返回对应曲目。
+    /// `index` 为曲目在 `tracks` 中的真实位置。
+    /// 随机播放模式下，会查找该曲目在洗牌序列中的位置以保持一致性。
     /// 索引越界时返回 `IndexOutOfBounds` 错误。
     pub fn jumpTo(self: *Playlist, index: usize) !Track {
         if (index >= self.tracks.items.len) return error.IndexOutOfBounds;
-        self.current_index = index;
+        if (self.shuffle) {
+            if (self.shuffle_order) |*so| {
+                // 在洗牌序列中查找该曲目的位置
+                for (so.items, 0..) |track_idx, pos| {
+                    if (track_idx == index) {
+                        self.current_index = pos;
+                        return self.tracks.items[index];
+                    }
+                }
+            }
+            // 找不到则回退：重新生成洗牌序列后设为末尾
+            self.regenerateShuffleOrder() catch {};
+            self.current_index = self.tracks.items.len - 1;
+        } else {
+            self.current_index = index;
+        }
         return self.tracks.items[index];
     }
 
@@ -211,17 +230,51 @@ pub const Playlist = struct {
 
     /// ## setShuffle — 启用或禁用随机播放
     ///
-    /// 启用时生成新的洗牌序列，禁用时释放已有的洗牌序列。
+    /// 启用时生成新的洗牌序列，并将当前曲目定位到洗牌序列中的对应位置。
+    /// 禁用时将当前播放位置从洗牌位置映射回真实曲目索引。
     pub fn setShuffle(self: *Playlist, enabled: bool) void {
         self.shuffle = enabled;
         if (enabled) {
+            // 记住当前正在播放的真实曲目索引
+            const current_track = if (self.tracks.items.len > 0 and self.current_index < self.tracks.items.len)
+                self.current_index
+            else
+                0;
             self.regenerateShuffleOrder() catch {};
+            // 在新洗牌序列中找到当前曲目，保持播放不跳变
+            if (self.shuffle_order) |*so| {
+                for (so.items, 0..) |track_idx, pos| {
+                    if (track_idx == current_track) {
+                        self.current_index = pos;
+                        return;
+                    }
+                }
+            }
         } else {
+            // 关闭 shuffle：从洗牌位置映射回真实曲目索引
+            const idx = self.realIndex();
             if (self.shuffle_order) |*so| {
                 so.deinit();
                 self.shuffle_order = null;
             }
+            self.current_index = idx;
         }
+    }
+
+    /// ## realIndex — 将逻辑播放位置映射到真实曲目索引
+    ///
+    /// 随机播放开启时，`current_index` 是洗牌序列中的位置，
+    /// 通过 `shuffle_order` 映射回 `tracks` 中的真实索引。
+    /// 关闭时直接返回 `current_index`。
+    fn realIndex(self: *const Playlist) usize {
+        if (self.shuffle) {
+            if (self.shuffle_order) |*so| {
+                if (self.current_index < so.items.len) {
+                    return so.items[self.current_index];
+                }
+            }
+        }
+        return self.current_index;
     }
 
     /// ## regenerateShuffleOrder — 重新生成随机播放顺序
