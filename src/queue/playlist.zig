@@ -233,13 +233,13 @@ pub const Playlist = struct {
     /// 启用时生成新的洗牌序列，并将当前曲目定位到洗牌序列中的对应位置。
     /// 禁用时将当前播放位置从洗牌位置映射回真实曲目索引。
     pub fn setShuffle(self: *Playlist, enabled: bool) void {
-        self.shuffle = enabled;
         if (enabled) {
             // 记住当前正在播放的真实曲目索引
-            const current_track = if (self.tracks.items.len > 0 and self.current_index < self.tracks.items.len)
-                self.current_index
+            const current_track = if (self.tracks.items.len > 0)
+                self.realIndex()
             else
                 0;
+            self.shuffle = true;
             self.regenerateShuffleOrder() catch {};
             // 在新洗牌序列中找到当前曲目，保持播放不跳变
             if (self.shuffle_order) |*so| {
@@ -253,6 +253,7 @@ pub const Playlist = struct {
         } else {
             // 关闭 shuffle：从洗牌位置映射回真实曲目索引
             const idx = self.realIndex();
+            self.shuffle = false;
             if (self.shuffle_order) |*so| {
                 so.deinit();
                 self.shuffle_order = null;

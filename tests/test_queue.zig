@@ -340,3 +340,29 @@ test "shuffle with repeat all wraps around" {
     // 循环后应回到最初播放的曲目
     try std.testing.expectEqualStrings(first.url, wrapped.?.url);
 }
+
+// 测试重复开启随机播放时仍保持当前曲目
+//
+// 当 shuffle 已开启时再次调用 setShuffle(true) 会重新洗牌，
+// 但当前正在播放的真实曲目不应因使用洗牌位置而跳变。
+test "shuffle re-enable keeps current track" {
+    const allocator = std.testing.allocator;
+    var pl = Playlist.init(allocator);
+    defer pl.deinit();
+
+    try pl.add(.{ .url = "a.mp3" });
+    try pl.add(.{ .url = "b.mp3" });
+    try pl.add(.{ .url = "c.mp3" });
+    try pl.add(.{ .url = "d.mp3" });
+
+    pl.setShuffle(true);
+
+    // 在洗牌模式下向前移动，确保 current_index 不再等于真实索引的场景也被覆盖
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        const next_track = pl.next() orelse break;
+        const before = next_track.url;
+        pl.setShuffle(true);
+        try std.testing.expectEqualStrings(before, pl.current().?.url);
+    }
+}
