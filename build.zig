@@ -244,17 +244,18 @@ fn linkPlatformLibs(b: *std.Build, mod: *std.Build.Module, target: std.Build.Res
             mod.linkSystemLibrary("uuid", .{});
         },
         .macos => {
-            // 显式添加 macOS SDK 框架搜索路径。
-            // Zig 的 linkFramework 在某些环境（如 CI）下无法自动定位 SDK，
-            // 需要通过 getSdk 获取路径后手动添加搜索路径。
-            // 显式添加 macOS SDK 框架搜索路径并链接 framework。
-            // Zig 的 linkFramework 在某些环境（如 CI）下无法自动定位 SDK，
-            // 需要通过 getSdk 获取路径后手动添加搜索路径，因此 framework 链接
-            // 必须在 SDK 路径获取成功后才能生效。
-            if (std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result)) |sdk| {
-                mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
-                mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
-                mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });
+            // macOS SDK 路径获取（优先级从高到低）：
+            // 1. getSdk：macOS 主机自动检测
+            // 2. SDKROOT 环境变量：交叉编译时手动指定
+            // 3. --sysroot 构建参数
+            const sdk = sdk_blk: {
+                break :sdk_blk std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse b.graph.environ_map.get("SDKROOT") orelse b.sysroot;
+            };
+
+            if (sdk) |path| {
+                mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ path, "System/Library/Frameworks" }) });
+                mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ path, "usr/include" }) });
+                mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ path, "usr/lib" }) });
                 // Zig 交叉编译 macOS 时 -lc 链接的是 Zig 自带 libc，不含 iconv。
                 // 需要显式链接系统的 libiconv（SDK 的 usr/lib/libiconv.tbd）。
                 mod.linkSystemLibrary("iconv", .{});
