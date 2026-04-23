@@ -280,6 +280,10 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeSeek(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return -1;
+    if (position_ms < 0) {
+        callback.postEvent(&h.pending_event, .error_occurred);
+        return -1;
+    }
     h.player.seek(@intCast(position_ms)) catch return -1;
     return 0;
 }
@@ -429,6 +433,10 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeRemoveFromQueue(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
+    if (index < 0) {
+        callback.postEvent(&h.pending_event, .error_occurred);
+        return;
+    }
     h.player.removeFromQueue(@intCast(index)) catch {
         callback.postEvent(&h.pending_event, .error_occurred);
     };
@@ -490,6 +498,10 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayAtIndex(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
+    if (index < 0) {
+        callback.postEvent(&h.pending_event, .error_occurred);
+        return;
+    }
     h.player.playAtIndex(@intCast(index)) catch {
         callback.postEvent(&h.pending_event, .error_occurred);
     };
@@ -572,6 +584,10 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetLyricLineAt(
 ) ?*jni.JString {
     _ = obj;
     const h = handleToPtr(handle) orelse return null;
+    if (time_ms < 0) {
+        callback.postEvent(&h.pending_event, .error_occurred);
+        return null;
+    }
     // lyrics_data 为 ?Lyrics，使用 |*lyrics| 获取内部指针
     if (h.player.lyrics_data) |*lyrics| {
         const idx = lyrics.getLineAt(@intCast(time_ms)) orelse return null;
