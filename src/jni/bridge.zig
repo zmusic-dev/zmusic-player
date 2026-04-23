@@ -21,11 +21,14 @@
 //!
 //! ## 回调机制
 //!
-//! 播放器引擎的回调通过 `callback.postEvent()` 发布到原子事件标志，
+//! 每个 `PlayerHandle` 持有独立的原子事件标志（`pending_event`）。
+//! 播放器回调通过 Player 的 `callback_context` 定位到对应 PlayerHandle，
+//! 再通过 `callback.postEvent()` 发布到该实例的原子事件标志。
 //! Java 侧通过 `nativePollEvent` 主动轮询消费，避免在音频线程中
 //! 直接调用 JNI（防止死锁）。
 
 const std = @import("std");
+const atomic = std.atomic;
 const callback = @import("callback");
 const jni = @import("jni_types.zig");
 const player_mod = @import("player");
@@ -40,12 +43,14 @@ const allocator = std.heap.c_allocator;
 
 /// JNI 播放器实例句柄。
 ///
-/// 封装 Player 引擎和通过 JNI 分配的字符串副本列表。
+/// 封装 Player 引擎、per-instance 事件标志和通过 JNI 分配的字符串副本列表。
 /// 字符串副本用于安全地在 JNI 调用之外持有 Java 传入的文本数据，
 /// 例如播放队列中的曲目 URL、标题、艺术家等。
 const PlayerHandle = struct {
     /// 播放器引擎实例
     player: Player,
+    /// per-instance 待处理事件标志，替代全局原子
+    pending_event: atomic.Value(u32),
     /// 所有通过 `copyAndTrackJniString` 复制的字符串副本，
     /// 在 destroy 时统一释放
     string_allocs: std.array_list.Managed([]const u8),
@@ -61,6 +66,7 @@ const PlayerHandle = struct {
         errdefer allocator.destroy(h);
         h.* = .{
             .player = try Player.init(allocator),
+            .pending_event = callback.createPendingEvent(),
             .string_allocs = std.array_list.Managed([]const u8).init(allocator),
         };
         return h;
@@ -121,25 +127,35 @@ fn copyAndTrackJniString(env: *jni.JNIEnv, jstr: ?*jni.JString, handle: *PlayerH
 // 播放器事件回调
 // ============================================================================
 
+/// 从回调上下文恢复 PlayerHandle 指针。
+/// Player 的 callback_context 在 nativeInit 中被设置为 PlayerHandle 指针。
+inline fn ctxToHandle(ctx: ?*anyopaque) *PlayerHandle {
+    return @ptrCast(@alignCast(ctx.?));
+}
+
 /// 播放状态变更回调。
-/// 将状态变更事件发布到原子事件标志，由 Java 轮询消费。
-fn onStateChangedCb(_: PlaybackState) void {
-    callback.postEvent(.state_changed);
+/// 通过 context 定位到对应 PlayerHandle，将状态变更事件发布到其实例事件标志。
+fn onStateChangedCb(ctx: ?*anyopaque, _: PlaybackState) void {
+    const h = ctxToHandle(ctx);
+    callback.postEvent(&h.pending_event, .state_changed);
 }
 
 /// 曲目播放结束回调。
-fn onTrackEndedCb() void {
-    callback.postEvent(.track_ended);
+fn onTrackEndedCb(ctx: ?*anyopaque) void {
+    const h = ctxToHandle(ctx);
+    callback.postEvent(&h.pending_event, .track_ended);
 }
 
 /// 播放错误回调。
-fn onErrorCb(_: PlayerError) void {
-    callback.postEvent(.error_occurred);
+fn onErrorCb(ctx: ?*anyopaque, _: PlayerError) void {
+    const h = ctxToHandle(ctx);
+    callback.postEvent(&h.pending_event, .error_occurred);
 }
 
 /// 播放进度更新回调。
-fn onProgressCb(_: u64, _: u64) void {
-    callback.postEvent(.progress_update);
+fn onProgressCb(ctx: ?*anyopaque, _: u64, _: u64) void {
+    const h = ctxToHandle(ctx);
+    callback.postEvent(&h.pending_event, .progress_update);
 }
 
 // ============================================================================
@@ -157,6 +173,8 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeInit(
     _ = env;
     _ = obj;
     const handle = PlayerHandle.create() catch return 0;
+    // 设置回调上下文为 PlayerHandle 指针，使回调能定位到正确实例
+    handle.player.setCallbackContext(@ptrCast(@alignCast(handle)));
     // 注册回调，将播放器内部事件桥接到 JNI 事件轮询机制
     handle.player.onStateChanged(onStateChangedCb);
     handle.player.onTrackEnded(onTrackEndedCb);
@@ -368,7 +386,9 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeEnqueue(
         .title = title_copy,
         .artist = artist_copy,
     };
-    h.player.enqueue(track) catch {};
+    h.player.enqueue(track) catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 将曲目插入到当前播放位置之后（"下一首播放"）。
@@ -392,7 +412,9 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeEnqueueNext(
         .title = title_copy,
         .artist = artist_copy,
     };
-    h.player.enqueueNext(track) catch {};
+    h.player.enqueueNext(track) catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 从播放队列中移除指定索引位置的曲目。
@@ -407,7 +429,9 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeRemoveFromQueue(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
-    h.player.removeFromQueue(@intCast(index)) catch {};
+    h.player.removeFromQueue(@intCast(index)) catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 清空播放队列中的所有曲目。
@@ -424,7 +448,7 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeClearQueue(
 
 /// 播放队列中的下一首曲目。
 ///
-/// 队列为空或到达末尾时静默跳过。
+/// 队列为空或到达末尾时向实例发布错误事件。
 pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayNext(
     env: *jni.JNIEnv,
     obj: ?*anyopaque,
@@ -433,12 +457,14 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayNext(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
-    h.player.playNext() catch {};
+    h.player.playNext() catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 播放队列中的上一首曲目。
 ///
-/// 队列为空或到达开头时静默跳过。
+/// 队列为空或到达开头时向实例发布错误事件。
 pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayPrevious(
     env: *jni.JNIEnv,
     obj: ?*anyopaque,
@@ -447,12 +473,14 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayPrevious(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
-    h.player.playPrevious() catch {};
+    h.player.playPrevious() catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 播放队列中指定索引位置的曲目。
 ///
-/// 索引越界时静默跳过。
+/// 索引越界时向实例发布错误事件。
 pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayAtIndex(
     env: *jni.JNIEnv,
     obj: ?*anyopaque,
@@ -462,7 +490,9 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlayAtIndex(
     _ = env;
     _ = obj;
     const h = handleToPtr(handle) orelse return;
-    h.player.playAtIndex(@intCast(index)) catch {};
+    h.player.playAtIndex(@intCast(index)) catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 获取播放队列中的曲目数量。
@@ -495,7 +525,7 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetCurrentIndex(
 
 /// 加载 LRC 格式歌词内容。
 ///
-/// 替换之前加载的歌词。解析失败时静默跳过。
+/// 替换之前加载的歌词。解析失败时向实例发布错误事件。
 pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeLoadLyrics(
     env: *jni.JNIEnv,
     obj: ?*anyopaque,
@@ -507,7 +537,9 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeLoadLyrics(
     const chars = jni.getStringUTFChars(env, content) orelse return;
     defer jni.releaseStringUTFChars(env, content, chars);
     const slice = std.mem.sliceTo(chars, 0);
-    h.player.loadLyrics(slice) catch {};
+    h.player.loadLyrics(slice) catch {
+        callback.postEvent(&h.pending_event, .error_occurred);
+    };
 }
 
 /// 获取当前时间对应的歌词行文本。
@@ -594,7 +626,8 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeSetShuffle(
 
 /// 轮询待处理的 native 事件。
 ///
-/// 采用原子交换操作"读取并清除"事件标志，确保每个事件只被消费一次。
+/// 每次调用时先驱动 Player 的 `tick()` 进行统一的进度和结束检测，
+/// 再采用原子交换操作"读取并清除"该实例的事件标志，确保每个事件只被消费一次。
 ///
 /// 返回值为事件类型码：
 /// - 0：无事件
@@ -610,7 +643,9 @@ pub export fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePollEvent(
 ) i32 {
     _ = env;
     _ = obj;
-    _ = handle;
-    const event: u32 = @intFromEnum(callback.pollEvent());
+    const h = handleToPtr(handle) orelse return 0;
+    // 统一驱动进度回调与结束检测
+    _ = h.player.tick();
+    const event: u32 = @intFromEnum(callback.pollEvent(&h.pending_event));
     return @bitCast(event);
 }

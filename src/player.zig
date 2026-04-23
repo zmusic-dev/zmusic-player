@@ -37,19 +37,20 @@ pub const LyricLine = lyrics_types.LyricLine;
 
 /// 播放状态变更回调。
 /// 当 Player 内部状态（playing / paused / stopped / error / loading）发生变化时触发。
-pub const StateCallback = *const fn (PlaybackState) void;
+/// `context` 由注册方通过 `setCallbackContext` 设定，用于回调时定位实例。
+pub const StateCallback = *const fn (context: ?*anyopaque, state: PlaybackState) void;
 
 /// 播放进度回调。
 /// 定期触发，报告当前播放位置和总时长（均为毫秒）。
-pub const ProgressCallback = *const fn (position_ms: u64, duration_ms: u64) void;
+pub const ProgressCallback = *const fn (context: ?*anyopaque, position_ms: u64, duration_ms: u64) void;
 
 /// 曲目播放结束回调。
 /// 当一首曲目播放到末尾时触发，可用于自动播放下一曲。
-pub const TrackEndedCallback = *const fn () void;
+pub const TrackEndedCallback = *const fn (context: ?*anyopaque) void;
 
 /// 错误回调。
 /// 播放过程中发生错误时触发，携带具体错误类型。
-pub const ErrorCallback = *const fn (PlayerError) void;
+pub const ErrorCallback = *const fn (context: ?*anyopaque, err: PlayerError) void;
 
 /// # Player — 播放器核心结构体
 ///
@@ -105,6 +106,11 @@ pub const Player = struct {
     /// 错误回调
     on_error_cb: ?ErrorCallback,
 
+    /// 回调上下文指针，在每次触发回调时作为第一个参数传递。
+    /// 由外部注册方通过 `setCallbackContext` 设定，用于回调时定位到具体实例。
+    /// 为 null 时回调仍会触发，只是 context 参数为 null。
+    callback_context: ?*anyopaque,
+
     /// ## init — 创建 Player 实例
     ///
     /// 只初始化播放队列和默认值，**不立即初始化音频引擎**。
@@ -129,6 +135,7 @@ pub const Player = struct {
             .on_progress = null,
             .on_track_ended = null,
             .on_error_cb = null,
+            .callback_context = null,
         };
     }
 
@@ -520,12 +527,57 @@ pub const Player = struct {
         self.on_error_cb = cb;
     }
 
+    /// 设置回调上下文指针。
+    ///
+    /// `ctx` 会在每次触发回调时作为第一个参数传递，
+    /// 供回调实现方定位到具体实例（如 JNI 的 PlayerHandle）。
+    pub fn setCallbackContext(self: *Player, ctx: ?*anyopaque) void {
+        self.callback_context = ctx;
+    }
+
+    /// ## tick — 统一轮询驱动
+    ///
+    /// 由外部调用者定期调用（如 CLI 主循环或 JNI 轮询），统一处理：
+    /// 1. 触发进度回调（`on_progress`）
+    /// 2. 检测曲目播放结束并触发结束回调（`on_track_ended`）
+    ///
+    /// 返回 `true` 表示当前曲目已播放到末尾。
+    ///
+    /// **注意**：结束回调中可能触发新的播放操作（如 playNext），
+    /// 回调返回后本方法不再访问旧的 sound 指针，避免悬挂引用。
+    pub fn tick(self: *Player) bool {
+        if (self.state != .playing) return false;
+
+        // 读取进度信息（此时 sound 仍然有效）
+        const progress = self.getProgress();
+
+        // 触发进度回调
+        if (self.on_progress) |cb| {
+            cb(self.callback_context, progress.position_ms, progress.duration_ms);
+        }
+
+        // 进度回调可能改变播放状态（如外部调用 stop），需重新检查
+        if (self.state != .playing) return false;
+        const snd = self.sound orelse return false;
+
+        // 曲目结束检测：仅当已播放超过 1 秒时判定，避免启动误判
+        if (ma.ma_sound_at_end(snd) != 0 and progress.position_ms > 1000) {
+            // 触发结束回调（回调中可能调用 play/stop，使旧 sound 指针失效）
+            if (self.on_track_ended) |cb| {
+                cb(self.callback_context);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
     /// ## setState — 内部状态变更（含回调通知）
     ///
     /// 更新内部状态并触发已注册的 `on_state_changed` 回调。
     /// 这是所有状态变更的唯一出口，确保回调不会遗漏。
     fn setState(self: *Player, new_state: PlaybackState) void {
         self.state = new_state;
-        if (self.on_state_changed) |cb| cb(new_state);
+        if (self.on_state_changed) |cb| cb(self.callback_context, new_state);
     }
 };

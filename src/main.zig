@@ -15,7 +15,6 @@ const builtin = @import("builtin");
 const player_mod = @import("player.zig");
 const Player = player_mod.Player;
 const PlaybackState = player_mod.PlaybackState;
-const ma = @import("miniaudio");
 const platform = @import("platform");
 const HttpClient = @import("net/http_client.zig").HttpClient;
 
@@ -181,13 +180,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         if (p.getState() == .playing) {
-            const snd = p.sound orelse break;
+            // 统一轮询：触发进度回调 + 检测曲目结束
+            const track_ended = p.tick();
             const progress = p.getProgress();
 
-            if (ma.ma_sound_at_end(snd) != 0 and progress.position_ms > 1000) {
-                if (p.on_track_ended) |cb| cb();
-                break;
-            }
+            if (track_ended) break;
 
             if (seek_cooldown > 0) {
                 seek_cooldown -= 1;
