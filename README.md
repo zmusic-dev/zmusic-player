@@ -14,7 +14,7 @@
 
 ## 简介
 
-ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Zig 实现，为 [ZMusic](https://github.com/zmusic-dev/zmusic-server) 提供底层播放能力。
+ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Zig 实现，为 [ZMusic](https://github.com/starhui-dev/zmusic-server) 提供底层播放能力。
 
 * 网络音频流式播放（边下边播）
 * 本地文件播放
@@ -88,17 +88,17 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## 贡献者
 
-[![][contrib]](https://github.com/zmusic-dev/zmusic-player/graphs/contributors)
+[![][contrib]](https://github.com/starhui-dev/zmusic-player/graphs/contributors)
 
-[banner]: https://socialify.git.ci/zmusic-dev/zmusic-player/image?description=1&forks=1&issues=1&language=1&name=1&pulls=1&stargazers=1&theme=Auto
+[banner]: https://socialify.git.ci/starhui-dev/zmusic-player/image?description=1&forks=1&issues=1&language=1&name=1&owner=1&pulls=1&stargazers=1&theme=Auto
 
-[language]: https://img.shields.io/github/languages/top/zmusic-dev/zmusic-player?style=for-the-badge
+[language]: https://img.shields.io/github/languages/top/starhui-dev/zmusic-player?style=for-the-badge
 
-[last-commit]: https://img.shields.io/github/last-commit/zmusic-dev/zmusic-player?style=for-the-badge
+[last-commit]: https://img.shields.io/github/last-commit/starhui-dev/zmusic-player?style=for-the-badge
 
-[license]: https://img.shields.io/github/license/zmusic-dev/zmusic-player?style=for-the-badge
+[license]: https://img.shields.io/github/license/starhui-dev/zmusic-player?style=for-the-badge
 
-[contrib]: https://contrib.rocks/image?repo=zmusic-dev/zmusic-player
+[contrib]: https://contrib.rocks/image?repo=starhui-dev/zmusic-player
 
 [docs-link]: https://zmusic.zhenxin.me
 
