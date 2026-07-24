@@ -4,6 +4,9 @@ zig-pkg/
 zig-out/
 *.o
 
+# Rust
+target/
+
 # IDE - IntelliJ
 .idea/
 *.iml

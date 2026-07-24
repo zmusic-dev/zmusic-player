@@ -14,13 +14,21 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-linux
+            artifact_target: x86_64-linux
+            zig_target: x86_64-linux-gnu
+            rust_target: x86_64-unknown-linux-gnu
           - os: windows-latest
-            target: x86_64-windows-gnu
+            artifact_target: x86_64-windows-msvc
+            zig_target: x86_64-windows-gnu
+            rust_target: x86_64-pc-windows-msvc
           - os: macos-latest
-            target: aarch64-macos
-          - os: macos-15
-            target: x86_64-macos
+            artifact_target: aarch64-macos
+            zig_target: aarch64-macos
+            rust_target: aarch64-apple-darwin
+          - os: macos-15-intel
+            artifact_target: x86_64-macos
+            zig_target: x86_64-macos
+            rust_target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
@@ -35,19 +43,35 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+      - name: Build Rust
+        run: cargo build --release --target=${{ matrix.rust_target }}
 
-      - name: Test
-        run: zig build test -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+      - name: Test Rust
+        run: cargo test --all-targets --target=${{ matrix.rust_target }}
+
+      - name: Test Java JNI
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p target/java-test
+          javac -d target/java-test examples/ZMusicPlayer.java tests/java/me/zhenxin/zmusic/JniSmokeTest.java
+          java -Djava.library.path=target/${{ matrix.rust_target }}/release -cp target/java-test me.zhenxin.zmusic.JniSmokeTest
+
+      - name: Build Zig regression
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseSmall
+
+      - name: Test Zig regression
+        run: zig build test -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseSmall
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: zmusic-${{ matrix.target }}
+          name: zmusic-${{ matrix.artifact_target }}
           path: |
-            zig-out/bin/
-            zig-out/lib/
+            target/${{ matrix.rust_target }}/release/zmusic-player
+            target/${{ matrix.rust_target }}/release/zmusic-player.exe
+            target/${{ matrix.rust_target }}/release/libzmusic.so
+            target/${{ matrix.rust_target }}/release/libzmusic.dylib
+            target/${{ matrix.rust_target }}/release/zmusic.dll
 
   release:
     needs: [build]
@@ -70,6 +94,7 @@ jobs:
             if [[ "$name" == *windows* ]]; then
               (cd "$dir" && zip -r "../../${name}-${version}.zip" .)
             else
+              chmod +x "$dir/zmusic-player"
               tar czf "${name}-${version}.tar.gz" -C "$dir" .
             fi
           done
