@@ -1,6 +1,6 @@
 .{
     .name = .zmusic_player,
-    .version = "1.0.0-alpha.3",
+    .version = "1.0.0-alpha.1",
     .dependencies = .{},
     .fingerprint = 0xf9cb23d3dc08446e,
     .minimum_zig_version = "0.16.0",
