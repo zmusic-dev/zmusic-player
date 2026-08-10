@@ -1,10 +1,11 @@
+use std::io::Read;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use zmusic::Player;
 use zmusic::state::PlaybackState;
-use zmusic::stream::{HttpStream, read_callback};
+use zmusic::stream::HttpStream;
 
 const TEST_MP3: &str = "https://cdn.zhenxin.me/%E6%88%91%E7%9A%84%E6%82%B2%E4%BC%A4%E6%98%AF%E6%B0%B4%E5%81%9A%E7%9A%84.mp3";
 const TEST_MP3_BYTES: usize = 3_844_855;
@@ -20,20 +21,12 @@ fn online_mp3_stream_downloads_to_eof() {
     let mut buffer = [0_u8; 64 * 1024];
     let mut total = 0;
     loop {
-        let mut bytes_read = 0;
-        let result = unsafe {
-            read_callback(
-                stream.user_data(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                &mut bytes_read,
-            )
-        };
+        let bytes_read = stream
+            .read(&mut buffer)
+            .unwrap_or_else(|error| panic!("在线流在 {total} 字节后失败: {error}"));
         total += bytes_read;
-        match result {
-            0 => assert!(bytes_read > 0),
-            1 => break,
-            _ => panic!("在线流在 {total} 字节后失败: {:?}", stream.error()),
+        if bytes_read == 0 {
+            break;
         }
     }
     assert_eq!(total, TEST_MP3_BYTES);

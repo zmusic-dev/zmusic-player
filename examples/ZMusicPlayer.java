@@ -461,7 +461,7 @@ public class ZMusicPlayer {
     /**
      * 交互式 CLI 入口。
      *
-     * <p>功能与 Zig CLI（main.zig）对齐：
+     * <p>功能与原生 CLI 对齐：
      * <ul>
      *   <li>命令行参数：{@code play <URL或路径> [--lyrics <LRC路径或URL>]}</li>
      *   <li>实时显示：进度条 + 播放状态 + 时间 + 音量 + 歌词</li>

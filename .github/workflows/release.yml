@@ -15,27 +15,25 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_target: x86_64-linux
-            zig_target: x86_64-linux-gnu
             rust_target: x86_64-unknown-linux-gnu
           - os: windows-latest
             artifact_target: x86_64-windows-msvc
-            zig_target: x86_64-windows-gnu
             rust_target: x86_64-pc-windows-msvc
           - os: macos-latest
             artifact_target: aarch64-macos
-            zig_target: aarch64-macos
             rust_target: aarch64-apple-darwin
           - os: macos-15-intel
             artifact_target: x86_64-macos
-            zig_target: x86_64-macos
             rust_target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - uses: jdx/mise-action@v4
 
@@ -55,12 +53,6 @@ jobs:
           mkdir -p target/java-test
           javac -d target/java-test examples/ZMusicPlayer.java tests/java/me/zhenxin/zmusic/JniSmokeTest.java
           java -Djava.library.path=target/${{ matrix.rust_target }}/release -cp target/java-test me.zhenxin.zmusic.JniSmokeTest
-
-      - name: Build Zig regression
-        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseSmall
-
-      - name: Test Zig regression
-        run: zig build test -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseSmall
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

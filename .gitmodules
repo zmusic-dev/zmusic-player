@@ -1,3 +1,0 @@
-[submodule "vendor/miniaudio"]
-	path = vendor/miniaudio
-	url = https://github.com/mackron/miniaudio.git

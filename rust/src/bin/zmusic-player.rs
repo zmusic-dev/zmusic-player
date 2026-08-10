@@ -381,13 +381,13 @@ mod tests {
     }
 
     #[test]
-    fn default_volume_matches_the_zig_cli_contract() {
+    fn default_volume_is_one_hundred_percent() {
         let options = Options::parse(["play", "song.mp3"].into_iter().map(str::to_owned)).unwrap();
         assert_eq!(options.volume, 0.2);
     }
 
     #[test]
-    fn legacy_key_bindings_are_preserved() {
+    fn playback_keys_map_to_controls() {
         use crossterm::event::KeyCode;
 
         assert_eq!(
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn volume_above_one_hundred_matches_the_zig_clamp() {
+    fn volume_above_one_hundred_is_clamped() {
         let options = Options::parse(
             ["play", "song.mp3", "--volume", "101"]
                 .into_iter()
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_trailing_arguments_match_the_zig_cli() {
+    fn unknown_trailing_arguments_are_ignored() {
         let options = Options::parse(
             ["play", "song.mp3", "--unknown"]
                 .into_iter()

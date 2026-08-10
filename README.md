@@ -14,7 +14,7 @@
 
 ## 简介
 
-ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Rust 实现，通过 JNI 为 [ZMusic](https://github.com/starhui-dev/zmusic-server) 提供底层播放能力。迁移观察期内保留 Zig 实现作为回归基线。
+ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Rust 实现，通过 JNI 为 [ZMusic](https://github.com/starhui-dev/zmusic-server) 提供底层播放能力。
 
 * 网络音频流式播放（边下边播）
 * 本地文件播放
@@ -26,6 +26,18 @@ ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Rust 实现
 ## 构建
 
 项目运行时版本由 `mise.toml` 固定。安装 [mise](https://mise.jdx.dev/) 后执行：
+
+Linux 构建依赖 ALSA 开发库：
+
+```sh
+# Debian / Ubuntu
+sudo apt-get install libasound2-dev
+
+# Arch Linux
+sudo pacman -S alsa-lib
+```
+
+安装系统依赖后执行：
 
 ```sh
 mise install
@@ -47,25 +59,22 @@ cargo test --test online_playback -- --ignored
 
 Rust 构建产物位于 `target/release/`：Linux 为 `libzmusic.so`，Windows 为 `zmusic.dll`，macOS 为 `libzmusic.dylib`，CLI 名为 `zmusic-player`。Windows MSVC 产物静态链接 CRT，不要求用户另行安装 Visual C++ Redistributable。
 
-Zig 回归构建仍可使用 `zig build` 和 `zig build test`；它不是当前发布产物来源。
-
 ## 架构
 
 ```
 rust/src/
 ├── player.rs          # Player API 和播放会话
-├── audio.rs           # miniaudio 安全封装
-├── stream.rs          # HTTP 有界流式缓冲
+├── audio.rs           # Rodio 输出、解码和无设备时钟
+├── stream.rs          # 4 MiB HTTP 有界流式缓冲
 ├── jni_bridge.rs      # JNI 适配和受控句柄表
 ├── queue.rs           # 播放队列
 ├── lyrics.rs          # LRC 歌词
 └── bin/               # CLI
 
 examples/              # Java 侧 JNI 接口示例
-native/                # 最小 miniaudio C shim
-vendor/miniaudio/      # C 音频引擎（vendored）
-src/                   # 迁移观察期保留的 Zig 实现
 ```
+
+音频输出由 Rodio 和 CPAL 提供，MP3、WAV、FLAC、Vorbis 解码由 Symphonia 提供。无物理输出设备时使用实时无声时钟，使服务端和 CI 环境仍能执行完整播放生命周期。
 
 ## 开源协议
 
@@ -89,8 +98,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ## 鸣谢
 
 * [Rust](https://www.rust-lang.org/) - 播放器核心实现语言
-* [Zig](https://ziglang.org/) - 迁移回归基线
-* [miniaudio](https://github.com/mackron/miniaudio) - 跨平台音频引擎
+* [Rodio](https://github.com/RustAudio/rodio) - 音频播放与控制
+* [CPAL](https://github.com/RustAudio/cpal) - 跨平台音频输出
+* [Symphonia](https://github.com/pdeljanov/Symphonia) - 音频格式解码
 
 ## 贡献者
 

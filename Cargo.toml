@@ -4,7 +4,6 @@ version = "1.0.0-alpha.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
-build = "build.rs"
 
 [lib]
 name = "zmusic"
@@ -20,11 +19,9 @@ crossterm = { version = "0.29.0", default-features = false, features = ["events"
 encoding_rs = "0.8.35"
 jni = "0.22.4"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls-no-provider"] }
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav", "flac", "vorbis"] }
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
-
-[build-dependencies]
-cc = "1.3.0"
 
 [profile.release]
 opt-level = "z"

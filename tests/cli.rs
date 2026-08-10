@@ -8,7 +8,7 @@ fn run(arguments: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn no_arguments_prints_the_zig_usage_and_succeeds() {
+fn no_arguments_prints_usage_and_succeeds() {
     let output = run(&[]);
     assert!(output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -17,7 +17,7 @@ fn no_arguments_prints_the_zig_usage_and_succeeds() {
 }
 
 #[test]
-fn unknown_command_and_missing_source_match_the_zig_cli() {
+fn unknown_command_and_missing_source_are_reported() {
     let unknown = run(&["unknown"]);
     assert!(unknown.status.success());
     assert_eq!(
@@ -34,7 +34,7 @@ fn unknown_command_and_missing_source_match_the_zig_cli() {
 }
 
 #[test]
-fn malformed_options_match_the_zig_cli_and_succeed() {
+fn malformed_options_are_reported() {
     for (arguments, message) in [
         (
             &["play", "song.mp3", "--lyrics"][..],

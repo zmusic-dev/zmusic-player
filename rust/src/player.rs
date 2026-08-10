@@ -3,7 +3,7 @@ use crate::event::{Event, EventMailbox};
 use crate::lyrics::{LyricLine, Lyrics};
 use crate::queue::{Playlist, Track};
 use crate::state::{PlaybackState, PlayerError, RepeatMode};
-use crate::stream::{HttpStream, read_callback, seek_callback};
+use crate::stream::{HttpStream, HttpStreamControl};
 
 pub struct Player {
     engine: Option<Engine>,
@@ -18,7 +18,7 @@ pub struct Player {
 
 struct PlaybackSession {
     sound: Option<Sound>,
-    stream: Option<HttpStream>,
+    stream: Option<HttpStreamControl>,
     ended_reported: bool,
 }
 
@@ -31,13 +31,13 @@ impl PlaybackSession {
         })
     }
 
-    fn from_url(engine: &Engine, url: &str) -> Result<Self, PlayerError> {
-        let mut stream = HttpStream::start(url)?;
-        let sound =
-            unsafe { engine.sound_from_stream(read_callback, seek_callback, stream.user_data())? };
+    fn from_url(engine: &Engine, url: &str, stream: HttpStream) -> Result<Self, PlayerError> {
+        let byte_len = stream.total_size();
+        let control = stream.control();
+        let sound = engine.sound_from_stream(stream, url, byte_len)?;
         Ok(Self {
             sound: Some(sound),
-            stream: Some(stream),
+            stream: Some(control),
             ended_reported: false,
         })
     }
@@ -53,7 +53,6 @@ impl Drop for PlaybackSession {
             stream.cancel();
         }
         if let Some(sound) = self.sound.take() {
-            let _ = sound.stop();
             drop(sound);
         }
         drop(self.stream.take());
@@ -88,10 +87,9 @@ impl Player {
         self.stop();
         self.last_error = None;
         self.set_state(PlaybackState::Loading);
-        let result = self.create_session(source).and_then(|session| {
-            session.sound().set_volume(self.volume)?;
-            session.sound().start()?;
-            Ok(session)
+        let result = self.create_session(source).inspect(|session| {
+            session.sound().set_volume(self.volume);
+            session.sound().play();
         });
 
         match result {
@@ -109,7 +107,7 @@ impl Player {
             return Ok(());
         }
         let session = self.session.as_ref().ok_or(PlayerError::InvalidState)?;
-        session.sound().stop()?;
+        session.sound().pause();
         self.set_state(PlaybackState::Paused);
         Ok(())
     }
@@ -119,7 +117,7 @@ impl Player {
             return Ok(());
         }
         let session = self.session.as_ref().ok_or(PlayerError::InvalidState)?;
-        session.sound().start()?;
+        session.sound().play();
         self.set_state(PlaybackState::Playing);
         Ok(())
     }
@@ -166,11 +164,8 @@ impl Player {
         } else {
             volume.clamp(0.0, 1.0)
         };
-        if let Some(engine) = &self.engine {
-            engine.set_volume(self.volume)?;
-        }
         if let Some(session) = &self.session {
-            session.sound().set_volume(self.volume)?;
+            session.sound().set_volume(self.volume);
         }
         Ok(())
     }
@@ -258,7 +253,7 @@ impl Player {
             .session
             .as_ref()
             .and_then(|session| session.stream.as_ref())
-            .and_then(HttpStream::error);
+            .and_then(HttpStreamControl::error);
         if let Some(error) = stream_error {
             let _: Result<(), PlayerError> = self.fail(error);
             return false;
@@ -285,17 +280,19 @@ impl Player {
     }
 
     fn create_session(&mut self, source: &str) -> Result<PlaybackSession, PlayerError> {
-        if self.engine.is_none() {
-            let engine = Engine::new()?;
-            engine.set_volume(self.volume)?;
-            self.engine = Some(engine);
-        }
-        let engine = self.engine.as_ref().expect("音频引擎已初始化");
         if source.starts_with("http://") || source.starts_with("https://") {
-            PlaybackSession::from_url(engine, source)
+            let stream = HttpStream::start(source)?;
+            PlaybackSession::from_url(self.engine()?, source, stream)
         } else {
-            PlaybackSession::from_file(engine, source)
+            PlaybackSession::from_file(self.engine()?, source)
         }
+    }
+
+    fn engine(&mut self) -> Result<&Engine, PlayerError> {
+        if self.engine.is_none() {
+            self.engine = Some(Engine::new()?);
+        }
+        Ok(self.engine.as_ref().expect("音频引擎已初始化"))
     }
 
     fn set_state(&mut self, state: PlaybackState) {

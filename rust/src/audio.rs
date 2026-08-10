@@ -1,63 +1,57 @@
-use std::ffi::{CString, c_char, c_void};
-use std::ptr::NonNull;
+use std::fs::File;
+use std::io::{Read, Seek};
+use std::num::{NonZeroU16, NonZeroU32};
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use rodio::mixer::{self, Mixer, MixerSource};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player as RodioPlayer, Source};
 
 use crate::state::PlayerError;
 
-#[repr(C)]
-struct ZmEngine {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-struct ZmSound {
-    _private: [u8; 0],
-}
-
-pub type StreamReadCallback = unsafe extern "C" fn(
-    user_data: *mut c_void,
-    buffer_out: *mut c_void,
-    bytes_to_read: usize,
-    bytes_read: *mut usize,
-) -> i32;
-
-pub type StreamSeekCallback =
-    unsafe extern "C" fn(user_data: *mut c_void, byte_offset: i64, origin: i32) -> i32;
-
-unsafe extern "C" {
-    fn zm_engine_create() -> *mut ZmEngine;
-    fn zm_engine_destroy(engine: *mut ZmEngine);
-    fn zm_engine_set_volume(engine: *mut ZmEngine, volume: f32) -> i32;
-
-    fn zm_sound_create_file(engine: *mut ZmEngine, path: *const c_char) -> *mut ZmSound;
-    fn zm_sound_create_stream(
-        engine: *mut ZmEngine,
-        read_proc: StreamReadCallback,
-        seek_proc: StreamSeekCallback,
-        user_data: *mut c_void,
-    ) -> *mut ZmSound;
-    fn zm_sound_destroy(sound: *mut ZmSound);
-    fn zm_sound_start(sound: *mut ZmSound) -> i32;
-    fn zm_sound_stop(sound: *mut ZmSound) -> i32;
-    fn zm_sound_set_volume(sound: *mut ZmSound, volume: f32) -> i32;
-    fn zm_sound_seek_ms(sound: *mut ZmSound, position_ms: u64) -> i32;
-    fn zm_sound_position_ms(sound: *const ZmSound) -> u64;
-    fn zm_sound_duration_ms(sound: *const ZmSound) -> u64;
-    fn zm_sound_at_end(sound: *const ZmSound) -> i32;
-}
+const HEADLESS_CHANNELS: u16 = 2;
+const HEADLESS_SAMPLE_RATE: u32 = 48_000;
+const HEADLESS_TICK: Duration = Duration::from_millis(10);
 
 struct EngineInner {
-    raw: NonNull<ZmEngine>,
+    mixer: Mixer,
+    _output: AudioOutput,
 }
 
-// miniaudio synchronizes engine operations internally. Rust callers additionally serialize
-// Player mutations per instance.
-unsafe impl Send for EngineInner {}
-unsafe impl Sync for EngineInner {}
+enum AudioOutput {
+    Device { _sink: MixerDeviceSink },
+    Headless { _output: HeadlessOutput },
+}
 
-impl Drop for EngineInner {
+struct HeadlessOutput {
+    stopped: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl HeadlessOutput {
+    fn start(source: MixerSource) -> Result<Self, PlayerError> {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = stopped.clone();
+        let worker = thread::Builder::new()
+            .name("zmusic-audio-clock".to_owned())
+            .spawn(move || run_headless_output(source, worker_stopped))
+            .map_err(|_| PlayerError::DeviceInitFailed)?;
+        Ok(Self {
+            stopped,
+            worker: Some(worker),
+        })
+    }
+}
+
+impl Drop for HeadlessOutput {
     fn drop(&mut self) {
-        unsafe { zm_engine_destroy(self.raw.as_ptr()) };
+        self.stopped.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -68,98 +62,149 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Result<Self, PlayerError> {
-        let raw =
-            NonNull::new(unsafe { zm_engine_create() }).ok_or(PlayerError::DeviceInitFailed)?;
+        let device = DeviceSinkBuilder::from_default_device()
+            .and_then(|builder| builder.open_sink_or_fallback());
+        let (mixer, output) = match device {
+            Ok(mut device) => {
+                device.log_on_drop(false);
+                (
+                    device.mixer().clone(),
+                    AudioOutput::Device { _sink: device },
+                )
+            }
+            Err(_) => {
+                let (mixer, source) = mixer::mixer(
+                    NonZeroU16::new(HEADLESS_CHANNELS).unwrap(),
+                    NonZeroU32::new(HEADLESS_SAMPLE_RATE).unwrap(),
+                );
+                let output = HeadlessOutput::start(source)?;
+                (mixer, AudioOutput::Headless { _output: output })
+            }
+        };
         Ok(Self {
-            inner: Arc::new(EngineInner { raw }),
+            inner: Arc::new(EngineInner {
+                mixer,
+                _output: output,
+            }),
         })
-    }
-
-    pub fn set_volume(&self, volume: f32) -> Result<(), PlayerError> {
-        result(unsafe { zm_engine_set_volume(self.inner.raw.as_ptr(), volume) })
     }
 
     pub fn sound_from_file(&self, path: &str) -> Result<Sound, PlayerError> {
-        let path = CString::new(path).map_err(|_| PlayerError::InvalidArgument)?;
-        let raw =
-            NonNull::new(unsafe { zm_sound_create_file(self.inner.raw.as_ptr(), path.as_ptr()) })
-                .ok_or(PlayerError::DecodeFailed)?;
-        Ok(Sound {
-            raw,
-            _engine: self.inner.clone(),
-        })
+        let file = File::open(path).map_err(|_| PlayerError::DecodeFailed)?;
+        let byte_len = file
+            .metadata()
+            .map_err(|_| PlayerError::DecodeFailed)?
+            .len();
+        self.sound_from_reader(file, Some(byte_len), format_hint(path))
     }
 
-    /// # Safety
-    ///
-    /// `user_data` must remain valid until the returned `Sound` is dropped. Both callbacks must
-    /// follow their C ABI contracts and may be called from miniaudio's audio thread.
-    pub unsafe fn sound_from_stream(
+    pub fn sound_from_stream<R>(
         &self,
-        read: StreamReadCallback,
-        seek: StreamSeekCallback,
-        user_data: *mut c_void,
-    ) -> Result<Sound, PlayerError> {
-        let raw = NonNull::new(unsafe {
-            zm_sound_create_stream(self.inner.raw.as_ptr(), read, seek, user_data)
-        })
-        .ok_or(PlayerError::DecodeFailed)?;
+        stream: R,
+        source: &str,
+        byte_len: Option<u64>,
+    ) -> Result<Sound, PlayerError>
+    where
+        R: Read + Seek + Send + Sync + 'static,
+    {
+        self.sound_from_reader(stream, byte_len, format_hint(source))
+    }
+
+    fn sound_from_reader<R>(
+        &self,
+        reader: R,
+        byte_len: Option<u64>,
+        hint: Option<&str>,
+    ) -> Result<Sound, PlayerError>
+    where
+        R: Read + Seek + Send + Sync + 'static,
+    {
+        let mut builder = Decoder::builder().with_data(reader).with_seekable(true);
+        if let Some(byte_len) = byte_len {
+            builder = builder.with_byte_len(byte_len);
+        }
+        if let Some(hint) = hint {
+            builder = builder.with_hint(hint);
+        }
+        let decoder = builder.build().map_err(|_| PlayerError::DecodeFailed)?;
+        let duration = decoder.total_duration().unwrap_or_default();
+        let player = RodioPlayer::connect_new(&self.inner.mixer);
+        player.pause();
+        player.append(decoder);
         Ok(Sound {
-            raw,
+            player,
+            duration,
             _engine: self.inner.clone(),
         })
     }
 }
 
 pub struct Sound {
-    raw: NonNull<ZmSound>,
+    player: RodioPlayer,
+    duration: Duration,
     _engine: Arc<EngineInner>,
 }
 
-// A Sound is owned by one PlaybackSession. Player synchronization prevents concurrent mutation.
-unsafe impl Send for Sound {}
-
 impl Sound {
-    pub fn start(&self) -> Result<(), PlayerError> {
-        result(unsafe { zm_sound_start(self.raw.as_ptr()) })
+    pub fn play(&self) {
+        self.player.play();
     }
 
-    pub fn stop(&self) -> Result<(), PlayerError> {
-        result(unsafe { zm_sound_stop(self.raw.as_ptr()) })
+    pub fn pause(&self) {
+        self.player.pause();
     }
 
-    pub fn set_volume(&self, volume: f32) -> Result<(), PlayerError> {
-        result(unsafe { zm_sound_set_volume(self.raw.as_ptr(), volume) })
+    pub fn set_volume(&self, volume: f32) {
+        self.player.set_volume(volume);
     }
 
     pub fn seek(&self, position_ms: u64) -> Result<(), PlayerError> {
-        result(unsafe { zm_sound_seek_ms(self.raw.as_ptr(), position_ms) })
+        self.player
+            .try_seek(Duration::from_millis(position_ms))
+            .map_err(|_| PlayerError::DecodeFailed)
     }
 
     pub fn position_ms(&self) -> u64 {
-        unsafe { zm_sound_position_ms(self.raw.as_ptr()) }
+        self.player.get_pos().as_millis() as u64
     }
 
     pub fn duration_ms(&self) -> u64 {
-        unsafe { zm_sound_duration_ms(self.raw.as_ptr()) }
+        self.duration.as_millis() as u64
     }
 
     pub fn at_end(&self) -> bool {
-        unsafe { zm_sound_at_end(self.raw.as_ptr()) != 0 }
+        self.player.empty()
     }
 }
 
 impl Drop for Sound {
     fn drop(&mut self) {
-        unsafe { zm_sound_destroy(self.raw.as_ptr()) };
+        self.player.stop();
+        self.player.sleep_until_end();
     }
 }
 
-fn result(code: i32) -> Result<(), PlayerError> {
-    if code == 0 {
-        Ok(())
-    } else {
-        Err(PlayerError::DecodeFailed)
+fn format_hint(source: &str) -> Option<&str> {
+    let path = source.split(['?', '#']).next()?;
+    Path::new(path).extension()?.to_str()
+}
+
+fn run_headless_output(mut source: MixerSource, stopped: Arc<AtomicBool>) {
+    let samples_per_tick = (HEADLESS_SAMPLE_RATE * u32::from(HEADLESS_CHANNELS) / 100) as usize;
+    let mut deadline = Instant::now();
+    while !stopped.load(Ordering::Acquire) {
+        for _ in 0..samples_per_tick {
+            if stopped.load(Ordering::Acquire) {
+                return;
+            }
+            let _ = source.next();
+        }
+        deadline += HEADLESS_TICK;
+        if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            thread::sleep(remaining);
+        } else {
+            deadline = Instant::now();
+        }
     }
 }
 
@@ -169,7 +214,15 @@ mod tests {
 
     #[test]
     fn engine_initializes_without_a_physical_device() {
-        let engine = Engine::new().unwrap();
-        engine.set_volume(0.25).unwrap();
+        Engine::new().unwrap();
+    }
+
+    #[test]
+    fn format_hint_ignores_url_query_and_fragment() {
+        assert_eq!(
+            format_hint("https://example.com/song.mp3?v=1#play"),
+            Some("mp3")
+        );
+        assert_eq!(format_hint("https://example.com/audio"), None);
     }
 }

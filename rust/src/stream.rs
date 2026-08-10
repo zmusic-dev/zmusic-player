@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
-use std::ffi::c_void;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -25,14 +24,14 @@ const INITIAL_BUFFER_TIMEOUT: Duration = Duration::from_secs(15);
 static TLS_PROVIDER_READY: OnceLock<bool> = OnceLock::new();
 
 pub struct HttpStream {
-    callback: Box<CallbackState>,
     shared: Arc<Shared>,
+    cursor: u64,
     worker: Option<JoinHandle<()>>,
 }
 
-struct CallbackState {
+#[derive(Clone)]
+pub struct HttpStreamControl {
     shared: Arc<Shared>,
-    cursor: Mutex<u64>,
 }
 
 struct Shared {
@@ -82,28 +81,23 @@ impl HttpStream {
             .spawn(move || download_worker(worker_shared, url))
             .map_err(|_| PlayerError::NetworkUnavailable)?;
 
-        let callback = Box::new(CallbackState {
-            shared: shared.clone(),
-            cursor: Mutex::new(0),
-        });
-
         let stream = Self {
-            callback,
             shared,
+            cursor: 0,
             worker: Some(worker),
         };
         stream.wait_initial_buffer()?;
         Ok(stream)
     }
 
-    pub fn user_data(&mut self) -> *mut c_void {
-        ptr::from_mut(self.callback.as_mut()).cast()
+    pub fn control(&self) -> HttpStreamControl {
+        HttpStreamControl {
+            shared: self.shared.clone(),
+        }
     }
 
     pub fn cancel(&self) {
-        self.shared.cancelled.store(true, Ordering::Release);
-        self.shared.cancel_notify.notify_one();
-        self.shared.changed.notify_all();
+        cancel(&self.shared);
     }
 
     pub fn total_size(&self) -> Option<u64> {
@@ -138,6 +132,28 @@ impl HttpStream {
     }
 }
 
+impl HttpStreamControl {
+    pub fn cancel(&self) {
+        cancel(&self.shared);
+    }
+
+    pub fn error(&self) -> Option<PlayerError> {
+        self.shared.state.lock().unwrap().error
+    }
+}
+
+impl Read for HttpStream {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        read_from_buffer(&self.shared, &mut self.cursor, output)
+    }
+}
+
+impl Seek for HttpStream {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        seek_in_buffer(&self.shared, &mut self.cursor, position)
+    }
+}
+
 impl Drop for HttpStream {
     fn drop(&mut self) {
         self.cancel();
@@ -147,59 +163,27 @@ impl Drop for HttpStream {
     }
 }
 
-/// # Safety
-///
-/// `user_data` must point to a live `CallbackState`. `buffer_out` and `bytes_read` must point to
-/// writable storage valid for this call, and `buffer_out` must hold at least `bytes_to_read` bytes.
-pub unsafe extern "C" fn read_callback(
-    user_data: *mut c_void,
-    buffer_out: *mut c_void,
-    bytes_to_read: usize,
-    bytes_read: *mut usize,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| unsafe {
-        if user_data.is_null() || buffer_out.is_null() || bytes_read.is_null() {
-            return -1;
-        }
-        *bytes_read = 0;
-        let callback = &*(user_data.cast::<CallbackState>());
-        let output = std::slice::from_raw_parts_mut(buffer_out.cast::<u8>(), bytes_to_read);
-        read_from_buffer(callback, output, &mut *bytes_read)
-    }))
-    .unwrap_or(-1)
+fn cancel(shared: &Shared) {
+    shared.cancelled.store(true, Ordering::Release);
+    shared.cancel_notify.notify_waiters();
+    shared.changed.notify_all();
 }
 
-/// # Safety
-///
-/// `user_data` must point to a live `CallbackState` owned by the corresponding `HttpStream`.
-pub unsafe extern "C" fn seek_callback(
-    user_data: *mut c_void,
-    byte_offset: i64,
-    origin: i32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| unsafe {
-        if user_data.is_null() {
-            return -1;
-        }
-        let callback = &*(user_data.cast::<CallbackState>());
-        seek_in_buffer(callback, byte_offset, origin)
-    }))
-    .unwrap_or(-1)
-}
-
-fn read_from_buffer(callback: &CallbackState, output: &mut [u8], bytes_read: &mut usize) -> i32 {
-    let mut cursor = callback.cursor.lock().unwrap();
-    let mut state = callback.shared.state.lock().unwrap();
+fn read_from_buffer(shared: &Shared, cursor: &mut u64, output: &mut [u8]) -> io::Result<usize> {
+    if output.is_empty() {
+        return Ok(0);
+    }
+    let mut state = shared.state.lock().unwrap();
 
     loop {
-        if callback.shared.cancelled.load(Ordering::Acquire) {
-            return -1;
+        if shared.cancelled.load(Ordering::Acquire) {
+            return Ok(0);
         }
         if let Some(error) = state.error {
             return if error == PlayerError::Cancelled {
-                1
+                Ok(0)
             } else {
-                -1
+                Err(io::Error::other(error))
             };
         }
 
@@ -211,51 +195,57 @@ fn read_from_buffer(callback: &CallbackState, output: &mut [u8], bytes_read: &mu
             output[..count].copy_from_slice(&data[start..start + count]);
             *cursor += count as u64;
             state.reader_offset = *cursor;
-            *bytes_read = count;
-            callback.shared.changed.notify_all();
-            return 0;
+            shared.changed.notify_all();
+            return Ok(count);
         }
 
         if *cursor == state.end_offset && state.complete {
-            return 1;
+            return Ok(0);
         }
 
         if *cursor < state.base_offset || *cursor > state.end_offset {
             state.requested_seek = Some(*cursor);
             state.complete = false;
-            callback.shared.changed.notify_all();
+            shared.changed.notify_all();
         }
 
-        (state, _) = callback
-            .shared
+        (state, _) = shared
             .changed
             .wait_timeout(state, Duration::from_millis(100))
             .unwrap();
     }
 }
 
-fn seek_in_buffer(callback: &CallbackState, byte_offset: i64, origin: i32) -> i32 {
-    let mut cursor = callback.cursor.lock().unwrap();
-    let mut state = callback.shared.state.lock().unwrap();
-    let base = match origin {
-        0 => 0_i128,
-        1 => i128::from(*cursor),
-        2 => match state.total_size {
-            Some(total_size) => i128::from(total_size),
-            None => return -1,
+fn seek_in_buffer(shared: &Shared, cursor: &mut u64, position: SeekFrom) -> io::Result<u64> {
+    let mut state = shared.state.lock().unwrap();
+    let target = match position {
+        SeekFrom::Start(offset) => i128::from(offset),
+        SeekFrom::Current(offset) => i128::from(*cursor) + i128::from(offset),
+        SeekFrom::End(offset) => match state.total_size {
+            Some(total_size) => i128::from(total_size) + i128::from(offset),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "流总长度未知，无法从末尾定位",
+                ));
+            }
         },
-        _ => return -1,
     };
-    let target = base + i128::from(byte_offset);
     if target < 0 || target > i128::from(u64::MAX) {
-        return -1;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "流定位超出有效范围",
+        ));
     }
     let target = target as u64;
     if state
         .total_size
         .is_some_and(|total_size| target > total_size)
     {
-        return -1;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "流定位超过内容末尾",
+        ));
     }
 
     *cursor = target;
@@ -264,8 +254,8 @@ fn seek_in_buffer(callback: &CallbackState, byte_offset: i64, origin: i32) -> i3
         state.requested_seek = Some(target);
         state.complete = false;
     }
-    callback.shared.changed.notify_all();
-    0
+    shared.changed.notify_all();
+    Ok(target)
 }
 
 fn download_worker(shared: Arc<Shared>, url: String) {
@@ -551,26 +541,10 @@ mod tests {
         String::from_utf8(request).unwrap()
     }
 
-    fn read_to_end(mut stream: HttpStream) -> Result<Vec<u8>, PlayerError> {
+    fn read_to_end(mut stream: HttpStream) -> io::Result<Vec<u8>> {
         let mut result = Vec::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let mut bytes_read = 0;
-            let status = unsafe {
-                read_callback(
-                    stream.user_data(),
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len(),
-                    &mut bytes_read,
-                )
-            };
-            result.extend_from_slice(&buffer[..bytes_read]);
-            match status {
-                0 => assert!(bytes_read > 0),
-                1 => return Ok(result),
-                _ => return Err(stream.error().unwrap_or(PlayerError::DecodeFailed)),
-            }
-        }
+        stream.read_to_end(&mut result)?;
+        Ok(result)
     }
 
     #[test]
@@ -781,24 +755,9 @@ mod tests {
 
         let mut stream = HttpStream::start(&format!("http://{address}/audio.mp3")).unwrap();
         let target = (MAX_BUFFER_BYTES + 128 * 1024) as u64;
-        assert_eq!(
-            unsafe { seek_callback(stream.user_data(), target as i64, 0) },
-            0
-        );
+        assert_eq!(stream.seek(SeekFrom::Start(target)).unwrap(), target);
         let mut output = [0_u8; 64];
-        let mut bytes_read = 0;
-        assert_eq!(
-            unsafe {
-                read_callback(
-                    stream.user_data(),
-                    output.as_mut_ptr().cast(),
-                    output.len(),
-                    &mut bytes_read,
-                )
-            },
-            0
-        );
-        assert_eq!(bytes_read, output.len());
+        stream.read_exact(&mut output).unwrap();
         assert_eq!(
             output.as_slice(),
             &expected_payload[target as usize..target as usize + output.len()]
