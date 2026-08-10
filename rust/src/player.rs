@@ -34,7 +34,9 @@ impl PlaybackSession {
     fn from_url(engine: &Engine, url: &str, stream: HttpStream) -> Result<Self, PlayerError> {
         let byte_len = stream.total_size();
         let control = stream.control();
-        let sound = engine.sound_from_stream(stream, url, byte_len)?;
+        let sound = engine
+            .sound_from_stream(stream, url, byte_len)
+            .map_err(|error| control.error().unwrap_or(error))?;
         Ok(Self {
             sound: Some(sound),
             stream: Some(control),
