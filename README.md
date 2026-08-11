@@ -21,7 +21,7 @@ ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Rust 实现
 * LRC 歌词解析（支持翻译歌词配对）
 * 播放队列管理（循环模式、随机播放）
 * 延迟初始化音频引擎（避免空占设备）
-* 跨平台支持（Linux / Windows / macOS）
+* 跨平台支持（Linux / Windows / macOS / Android，含 ARM64）
 
 ## 构建
 
@@ -58,6 +58,14 @@ cargo test --test online_playback -- --ignored
 ```
 
 Rust 构建产物位于 `target/release/`：Linux 为 `libzmusic.so`，Windows 为 `zmusic.dll`，macOS 为 `libzmusic.dylib`，CLI 名为 `zmusic-player`。Windows MSVC 产物静态链接 CRT，不要求用户另行安装 Visual C++ Redistributable。
+
+ARM64 发布目标包括 Windows `aarch64-pc-windows-msvc`、Linux `aarch64-unknown-linux-gnu` 和 Android `aarch64-linux-android`。
+
+Android ARM64 使用 `aarch64-linux-android` 目标，最低支持 Android 8.0（API 26），发布产物为 JNI 库 `libzmusic.so`，不包含桌面 CLI。Android 端必须在创建第一个播放器前传入 Application 或 Activity Context：
+
+```java
+ZMusicPlayer.initializeAndroid(context);
+```
 
 ## 架构
 

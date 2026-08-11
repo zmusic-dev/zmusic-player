@@ -23,6 +23,9 @@ rodio = { version = "0.22.2", default-features = false, features = ["playback", 
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-context = "0.1.1"
+
 [profile.release]
 opt-level = "z"
 lto = "fat"

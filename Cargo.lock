@@ -2225,6 +2225,7 @@ dependencies = [
  "crossterm",
  "encoding_rs",
  "jni 0.22.4",
+ "ndk-context",
  "reqwest",
  "rodio",
  "rustls",

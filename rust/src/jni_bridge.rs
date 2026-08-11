@@ -4,8 +4,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use jni::EnvUnowned;
 use jni::errors::LogErrorAndDefault;
+#[cfg(target_os = "android")]
+use jni::objects::{Global, JClass};
 use jni::objects::{JObject, JString, Reference};
 use jni::sys::{jboolean, jfloat, jint, jlong};
+#[cfg(target_os = "android")]
+use jni::{jni_sig, jni_str};
 
 use crate::Player;
 use crate::event::Event;
@@ -16,6 +20,8 @@ type SharedPlayer = Arc<Mutex<Player>>;
 
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 static HANDLES: OnceLock<Mutex<HashMap<jlong, SharedPlayer>>> = OnceLock::new();
+#[cfg(target_os = "android")]
+static ANDROID_CONTEXT: Mutex<Option<Global<JObject<'static>>>> = Mutex::new(None);
 
 fn handles() -> &'static Mutex<HashMap<jlong, SharedPlayer>> {
     HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -48,6 +54,60 @@ fn optional_string(env: &jni::Env<'_>, value: &JString<'_>) -> jni::errors::Resu
     } else {
         value.try_to_string(env).map(Some)
     }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeInitializeAndroid<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    context: JObject<'local>,
+) -> jint {
+    unowned_env
+        .with_env(|env| -> jni::errors::Result<_> {
+            if context.is_null() {
+                return Ok(Some(-1));
+            }
+
+            let mut android_context = lock(&ANDROID_CONTEXT);
+            if android_context.is_some() {
+                return Ok(Some(0));
+            }
+
+            let application_context = env
+                .call_method(
+                    &context,
+                    jni_str!("getApplicationContext"),
+                    jni_sig!("()Landroid/content/Context;"),
+                    &[],
+                )?
+                .l()?;
+            if application_context.is_null() {
+                return Ok(Some(-1));
+            }
+
+            let java_vm = env.get_java_vm()?;
+            let context = env.new_global_ref(application_context)?;
+            let initialized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // SAFETY: JNI 提供有效的 VM 指针，全局引用在进程生命周期内保持有效，
+                // 且互斥锁保证 ndk-context 只由本库初始化一次。
+                unsafe {
+                    ndk_context::initialize_android_context(
+                        java_vm.get_raw().cast(),
+                        context.as_raw().cast(),
+                    );
+                }
+            }))
+            .is_ok();
+            if !initialized {
+                return Ok(Some(-1));
+            }
+
+            *android_context = Some(context);
+            Ok(Some(0))
+        })
+        .resolve::<LogErrorAndDefault>()
+        .unwrap_or(-1)
 }
 
 #[unsafe(no_mangle)]
