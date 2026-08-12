@@ -18,13 +18,16 @@ path = "rust/src/bin/zmusic-player.rs"
 crossterm = { version = "0.29.0", default-features = false, features = ["events", "windows"] }
 encoding_rs = "0.8.35"
 jni = "0.22.4"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls-no-provider"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav", "flac", "vorbis"] }
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-context = "0.1.1"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots-no-provider"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls-no-provider"] }
 
 [profile.release]
 opt-level = "z"

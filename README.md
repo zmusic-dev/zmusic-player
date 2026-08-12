@@ -67,6 +67,8 @@ Android ARM64 使用 `aarch64-linux-android` 目标，最低支持 Android 8.0�
 ZMusicPlayer.initializeAndroid(context);
 ```
 
+Android HTTPS 使用内置的 Mozilla 根证书，不要求宿主应用额外打包证书验证 AAR 或 Kotlin 运行时。
+
 ## 架构
 
 ```
