@@ -383,11 +383,21 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
                 }
                 Ok(Ok(Some(chunk))) => chunk,
                 Err(_) => {
-                    set_error(&shared, PlayerError::StreamTimeout);
+                    if let Some(offset) =
+                        take_requested_seek_or_set_error(&shared, PlayerError::StreamTimeout)
+                    {
+                        restart = Some(offset);
+                        break;
+                    }
                     return;
                 }
                 Ok(Err(_)) => {
-                    set_error(&shared, PlayerError::HttpError);
+                    if let Some(offset) =
+                        take_requested_seek_or_set_error(&shared, PlayerError::HttpError)
+                    {
+                        restart = Some(offset);
+                        break;
+                    }
                     return;
                 }
             };
@@ -488,6 +498,17 @@ fn take_requested_seek(shared: &Shared) -> Option<u64> {
     shared.state.lock().unwrap().requested_seek.take()
 }
 
+fn take_requested_seek_or_set_error(shared: &Shared, error: PlayerError) -> Option<u64> {
+    let mut state = shared.state.lock().unwrap();
+    if let Some(offset) = state.requested_seek.take() {
+        return Some(offset);
+    }
+    state.error = Some(error);
+    state.complete = true;
+    shared.changed.notify_all();
+    None
+}
+
 fn wait_for_seek(shared: &Shared) -> Option<u64> {
     let mut state = shared.state.lock().unwrap();
     loop {
@@ -524,6 +545,7 @@ fn parse_total_size(response: &reqwest::Response) -> Option<u64> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
     use std::thread;
 
     use super::*;
@@ -545,6 +567,15 @@ mod tests {
         let mut result = Vec::new();
         stream.read_to_end(&mut result)?;
         Ok(result)
+    }
+
+    fn parse_range_start(request: &str) -> Option<usize> {
+        request.lines().find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("range: bytes=")
+                .and_then(|value| value.strip_suffix('-'))
+                .and_then(|value| value.parse().ok())
+        })
     }
 
     #[test]
@@ -723,11 +754,7 @@ mod tests {
             for _ in 0..2 {
                 let (mut socket, _) = listener.accept().unwrap();
                 let request = read_request(&mut socket);
-                let range_start = request.lines().find_map(|line| {
-                    line.strip_prefix("Range: bytes=")
-                        .and_then(|value| value.strip_suffix('-'))
-                        .and_then(|value| value.parse::<usize>().ok())
-                });
+                let range_start = parse_range_start(&request);
                 server_requests.lock().unwrap().push(request);
 
                 let start = range_start.unwrap_or(0);
@@ -772,5 +799,60 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains(&format!("range: bytes={target}-"))
         );
+    }
+
+    #[test]
+    fn seek_restarts_after_old_response_is_truncated() {
+        let payload: Vec<u8> = (0..MAX_BUFFER_BYTES + 512 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let expected_payload = payload.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (truncate_tx, truncate_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            initial_socket
+                .write_all(&payload[..INITIAL_BUFFER_BYTES])
+                .unwrap();
+            initial_socket.flush().unwrap();
+            truncate_rx.recv().unwrap();
+            drop(initial_socket);
+
+            let (mut range_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut range_socket);
+            let range_start = parse_range_start(&request).unwrap();
+            write!(
+                range_socket,
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {range_start}-{}/{}\r\nConnection: close\r\n\r\n",
+                payload.len() - range_start,
+                payload.len() - 1,
+                payload.len()
+            )
+            .unwrap();
+            range_socket.write_all(&payload[range_start..]).unwrap();
+        });
+
+        let mut stream = HttpStream::start(&format!("http://{address}/audio.mp3")).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let target = (MAX_BUFFER_BYTES + 128 * 1024) as u64;
+        assert_eq!(stream.seek(SeekFrom::Start(target)).unwrap(), target);
+        truncate_tx.send(()).unwrap();
+
+        let mut output = [0_u8; 64];
+        stream.read_exact(&mut output).unwrap();
+        assert_eq!(
+            output.as_slice(),
+            &expected_payload[target as usize..target as usize + output.len()]
+        );
+        drop(stream);
+        server.join().unwrap();
     }
 }
