@@ -14,53 +14,77 @@
 
 ## 简介
 
-ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Zig 实现，为 [ZMusic](https://github.com/zmusic-dev/zmusic-server) 提供底层播放能力。
+ZMusic Player 是一个跨平台音频播放器核心引擎，使用 Rust 实现，通过 JNI 为 [ZMusic](https://github.com/starhui-dev/zmusic-server) 提供底层播放能力。
 
 * 网络音频流式播放（边下边播）
 * 本地文件播放
 * LRC 歌词解析（支持翻译歌词配对）
 * 播放队列管理（循环模式、随机播放）
 * 延迟初始化音频引擎（避免空占设备）
-* 跨平台支持（Linux / Windows / macOS）
+* 跨平台支持（Linux / Windows / macOS / Android，含 ARM64）
 
 ## 构建
 
-需要 [Zig](https://ziglang.org/) 0.16.0 或更高版本。
+项目运行时版本由 `mise.toml` 固定。安装 [mise](https://mise.jdx.dev/) 后执行：
+
+Linux 构建依赖 ALSA 开发库：
 
 ```sh
-zig build              # 构建所有（共享库 + 可执行文件）
-zig build run          # 运行桌面可执行文件
-zig build test         # 运行所有单元测试
+# Debian / Ubuntu
+sudo apt-get install libasound2-dev
+
+# Arch Linux
+sudo pacman -S alsa-lib
+```
+
+安装系统依赖后执行：
+
+```sh
+mise install
+cargo build --release  # 构建 JNI 共享库和 CLI
+cargo test --all-targets
 ```
 
 运行示例：
 
 ```sh
-zig build run -- play https://example.com/audio.mp3
+cargo run --release -- play https://example.com/audio.mp3
 ```
 
-交叉编译：
+需要公网的音频生命周期测试默认忽略，显式运行：
 
 ```sh
-zig build -Dtarget=x86_64-windows-gnu      # Windows
-zig build -Dtarget=aarch64-macos           # macOS ARM64
+cargo test --test online_playback -- --ignored
 ```
+
+Rust 构建产物位于 `target/release/`：Linux 为 `libzmusic.so`，Windows 为 `zmusic.dll`，macOS 为 `libzmusic.dylib`，CLI 名为 `zmusic-player`。Windows MSVC 产物静态链接 CRT，不要求用户另行安装 Visual C++ Redistributable。
+
+ARM64 发布目标包括 Windows `aarch64-pc-windows-msvc`、Linux `aarch64-unknown-linux-gnu` 和 Android `aarch64-linux-android`。
+
+Android ARM64 使用 `aarch64-linux-android` 目标，最低支持 Android 8.0（API 26），发布产物为 JNI 库 `libzmusic.so`，不包含桌面 CLI。Android 端必须在创建第一个播放器前传入 Application 或 Activity Context：
+
+```java
+ZMusicPlayer.initializeAndroid(context);
+```
+
+Android HTTPS 使用内置的 Mozilla 根证书，不要求宿主应用额外打包证书验证 AAR 或 Kotlin 运行时。
 
 ## 架构
 
 ```
-src/
-├── main.zig           # CLI 入口（桌面可执行文件）
-├── player.zig         # Player API 统一入口
-├── state/             # 播放状态机 + 错误类型
-├── queue/             # 播放队列管理
-├── lyrics/            # LRC 歌词解析器
-├── net/               # HTTP 客户端 + 流式播放
-└── jni/               # JNI 导出函数 + 事件回调
+rust/src/
+├── player.rs          # Player API 和播放会话
+├── audio.rs           # Rodio 输出、解码和无设备时钟
+├── stream.rs          # 4 MiB HTTP 有界流式缓冲
+├── jni_bridge.rs      # JNI 适配和受控句柄表
+├── queue.rs           # 播放队列
+├── lyrics.rs          # LRC 歌词
+└── bin/               # CLI
 
 examples/              # Java 侧 JNI 接口示例
-vendor/miniaudio/      # C 音频引擎（vendored）
 ```
+
+音频输出由 Rodio 和 CPAL 提供，MP3、WAV、FLAC、Vorbis 解码由 Symphonia 提供。无物理输出设备时使用实时无声时钟，使服务端和 CI 环境仍能执行完整播放生命周期。
 
 ## 开源协议
 
@@ -83,22 +107,24 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## 鸣谢
 
-* [Zig](https://ziglang.org/) - 现代化的系统编程语言
-* [miniaudio](https://github.com/mackron/miniaudio) - 跨平台音频引擎
+* [Rust](https://www.rust-lang.org/) - 播放器核心实现语言
+* [Rodio](https://github.com/RustAudio/rodio) - 音频播放与控制
+* [CPAL](https://github.com/RustAudio/cpal) - 跨平台音频输出
+* [Symphonia](https://github.com/pdeljanov/Symphonia) - 音频格式解码
 
 ## 贡献者
 
-[![][contrib]](https://github.com/zmusic-dev/zmusic-player/graphs/contributors)
+[![][contrib]](https://github.com/starhui-dev/zmusic-player/graphs/contributors)
 
-[banner]: https://socialify.git.ci/zmusic-dev/zmusic-player/image?description=1&forks=1&issues=1&language=1&name=1&pulls=1&stargazers=1&theme=Auto
+[banner]: https://socialify.git.ci/starhui-dev/zmusic-player/image?description=1&forks=1&issues=1&language=1&name=1&owner=1&pulls=1&stargazers=1&theme=Auto
 
-[language]: https://img.shields.io/github/languages/top/zmusic-dev/zmusic-player?style=for-the-badge
+[language]: https://img.shields.io/github/languages/top/starhui-dev/zmusic-player?style=for-the-badge
 
-[last-commit]: https://img.shields.io/github/last-commit/zmusic-dev/zmusic-player?style=for-the-badge
+[last-commit]: https://img.shields.io/github/last-commit/starhui-dev/zmusic-player?style=for-the-badge
 
-[license]: https://img.shields.io/github/license/zmusic-dev/zmusic-player?style=for-the-badge
+[license]: https://img.shields.io/github/license/starhui-dev/zmusic-player?style=for-the-badge
 
-[contrib]: https://contrib.rocks/image?repo=zmusic-dev/zmusic-player
+[contrib]: https://contrib.rocks/image?repo=starhui-dev/zmusic-player
 
 [docs-link]: https://zmusic.zhenxin.me
 

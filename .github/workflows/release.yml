@@ -14,20 +14,56 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-linux
+            artifact_target: x86_64-linux
+            rust_target: x86_64-unknown-linux-gnu
+            run_tests: true
+            test_jni: true
+            android: false
           - os: windows-latest
-            target: x86_64-windows-gnu
+            artifact_target: x86_64-windows-msvc
+            rust_target: x86_64-pc-windows-msvc
+            run_tests: true
+            test_jni: false
+            android: false
           - os: macos-latest
-            target: aarch64-macos
-          - os: macos-15
-            target: x86_64-macos
+            artifact_target: aarch64-macos
+            rust_target: aarch64-apple-darwin
+            run_tests: true
+            test_jni: false
+            android: false
+          - os: macos-15-intel
+            artifact_target: x86_64-macos
+            rust_target: x86_64-apple-darwin
+            run_tests: true
+            test_jni: false
+            android: false
+          - os: ubuntu-24.04-arm
+            artifact_target: aarch64-linux
+            rust_target: aarch64-unknown-linux-gnu
+            run_tests: true
+            test_jni: false
+            android: false
+          - os: windows-11-arm
+            artifact_target: aarch64-windows-msvc
+            rust_target: aarch64-pc-windows-msvc
+            run_tests: true
+            test_jni: true
+            android: false
+          - os: ubuntu-latest
+            artifact_target: aarch64-android
+            rust_target: aarch64-linux-android
+            run_tests: false
+            test_jni: false
+            android: true
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux' && !matrix.android
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - uses: jdx/mise-action@v4
 
@@ -35,19 +71,47 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+      - name: Configure Android NDK
+        if: matrix.android
+        run: |
+          rustup target add aarch64-linux-android
+          android_clang="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          android_ar="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          echo "CC_aarch64_linux_android=${android_clang}" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=${android_ar}" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${android_clang}" >> "$GITHUB_ENV"
 
-      - name: Test
-        run: zig build test -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+      - name: Build Rust library
+        if: matrix.android
+        run: cargo build --release --lib --target=${{ matrix.rust_target }}
+
+      - name: Build Rust
+        if: ${{ !matrix.android }}
+        run: cargo build --release --target=${{ matrix.rust_target }}
+
+      - name: Test Rust
+        if: matrix.run_tests
+        run: cargo test --all-targets --features test-headless --target=${{ matrix.rust_target }}
+
+      - name: Test Java JNI
+        if: matrix.test_jni
+        shell: bash
+        run: |
+          mkdir -p target/java-test
+          javac -d target/java-test examples/ZMusicPlayer.java tests/java/me/zhenxin/zmusic/JniSmokeTest.java
+          java -Djava.library.path=target/${{ matrix.rust_target }}/release -cp target/java-test me.zhenxin.zmusic.JniSmokeTest
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: zmusic-${{ matrix.target }}
+          name: zmusic-${{ matrix.artifact_target }}
+          if-no-files-found: error
           path: |
-            zig-out/bin/
-            zig-out/lib/
+            target/${{ matrix.rust_target }}/release/zmusic-player
+            target/${{ matrix.rust_target }}/release/zmusic-player.exe
+            target/${{ matrix.rust_target }}/release/libzmusic.so
+            target/${{ matrix.rust_target }}/release/libzmusic.dylib
+            target/${{ matrix.rust_target }}/release/zmusic.dll
 
   release:
     needs: [build]
@@ -70,6 +134,7 @@ jobs:
             if [[ "$name" == *windows* ]]; then
               (cd "$dir" && zip -r "../../${name}-${version}.zip" .)
             else
+              [ ! -f "$dir/zmusic-player" ] || chmod +x "$dir/zmusic-player"
               tar czf "${name}-${version}.tar.gz" -C "$dir" .
             fi
           done

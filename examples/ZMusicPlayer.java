@@ -3,7 +3,7 @@ package me.zhenxin.zmusic;
 /**
  * ZMusicPlayer JNI 测试程序
  *
- * <p>通过 JNI 桥接 Zig 层的播放引擎，提供完整的音乐播放器 Java 接口。
+ * <p>通过 JNI 桥接 Rust 层的播放引擎，提供完整的音乐播放器 Java 接口。
  * 包含播放控制、队列管理、歌词加载、事件回调等能力。
  * main 方法提供交互式演示流程。</p>
  *
@@ -11,19 +11,21 @@ package me.zhenxin.zmusic;
  */
 public class ZMusicPlayer {
 
-    // 加载 Zig 编译生成的原生动态库
+    // 加载 Rust 编译生成的原生动态库
     static {
         System.loadLibrary("zmusic");
     }
 
     // 原生对象的句柄，用于在 JNI 调用中标识底层播放器实例
-    private long handle;
+    private volatile long handle;
 
     // ---- Native 方法声明 ----
 
     // --- 生命周期管理 ---
     // 创建和销毁底层播放器实例
 
+    /** 为 Android AAudio 后端提供应用上下文 */
+    private static native int nativeInitializeAndroid(Object context);
     /** 初始化底层播放器，返回原生对象句柄 */
     private native long nativeInit();
     /** 销毁原生对象，释放底层资源 */
@@ -144,6 +146,23 @@ public class ZMusicPlayer {
 
     // 轮询线程运行标志，volatile 确保多线程可见性
     private volatile boolean running = true;
+    private volatile Thread pollingThread;
+
+    /**
+     * 初始化 Android 音频运行时，必须在创建第一个播放器前调用一次。
+     *
+     * @param context Android Application 或 Activity Context
+     * @throws IllegalArgumentException context 为 null 时抛出
+     * @throws IllegalStateException 原生音频运行时初始化失败时抛出
+     */
+    public static void initializeAndroid(Object context) {
+        if (context == null) {
+            throw new IllegalArgumentException("Android Context 不能为空");
+        }
+        if (nativeInitializeAndroid(context) != 0) {
+            throw new IllegalStateException("Android 音频运行时初始化失败");
+        }
+    }
 
     /**
      * 构造函数：初始化底层播放器。
@@ -162,10 +181,31 @@ public class ZMusicPlayer {
      * 先停止轮询线程，再销毁原生对象，避免竞态访问已释放的句柄。
      */
     public void destroy() {
-        running = false;
-        if (handle != 0) {
-            nativeDestroy(handle);
+        long currentHandle;
+        Thread thread;
+        synchronized (this) {
+            currentHandle = handle;
             handle = 0;
+            running = false;
+            thread = pollingThread;
+            pollingThread = null;
+        }
+        if (thread != null && thread != Thread.currentThread()) {
+            boolean interrupted = false;
+            thread.interrupt();
+            while (thread.isAlive()) {
+                try {
+                    thread.join();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (currentHandle != 0) {
+            nativeDestroy(currentHandle);
         }
     }
 
@@ -378,7 +418,7 @@ public class ZMusicPlayer {
         void onBuffering(boolean buffering);
     }
 
-    private EventListener listener;
+    private volatile EventListener listener;
 
     /**
      * 设置事件监听器。
@@ -402,18 +442,24 @@ public class ZMusicPlayer {
      * <p>选择轮询而非回调的原因：JNI 从原生线程回调 Java 需要额外管理
      * JNIEnv 和线程附着（AttachCurrentThread），轮询模式更简单可靠。</p>
      */
-    private void startPollingThread() {
+    private synchronized void startPollingThread() {
+        if (!running || handle == 0 || (pollingThread != null && pollingThread.isAlive())) {
+            return;
+        }
         Thread thread = new Thread(() -> {
-            while (running && handle != 0) {
-                int event = nativePollEvent(handle);
-                if (event != EVENT_NONE && listener != null) {
+            while (running) {
+                long currentHandle = handle;
+                if (currentHandle == 0) break;
+                int event = nativePollEvent(currentHandle);
+                EventListener currentListener = listener;
+                if (event != EVENT_NONE && currentListener != null) {
                     switch (event) {
-                        case EVENT_STATE_CHANGED -> listener.onStateChanged(nativeGetState(handle));
-                        case EVENT_TRACK_ENDED -> listener.onTrackEnded();
-                        case EVENT_PROGRESS_UPDATE -> listener.onProgress(
-                            nativeGetPosition(handle), nativeGetDuration(handle));
-                        case EVENT_ERROR -> listener.onError("播放错误");
-                        case EVENT_BUFFERING -> listener.onBuffering(true);
+                        case EVENT_STATE_CHANGED -> currentListener.onStateChanged(nativeGetState(currentHandle));
+                        case EVENT_TRACK_ENDED -> currentListener.onTrackEnded();
+                        case EVENT_PROGRESS_UPDATE -> currentListener.onProgress(
+                            nativeGetPosition(currentHandle), nativeGetDuration(currentHandle));
+                        case EVENT_ERROR -> currentListener.onError("播放错误");
+                        case EVENT_BUFFERING -> currentListener.onBuffering(true);
                     }
                 }
                 try { Thread.sleep(50); } catch (InterruptedException e) { break; }
@@ -421,6 +467,7 @@ public class ZMusicPlayer {
         });
         // 守护线程：JVM 退出时不需要等待此线程结束
         thread.setDaemon(true);
+        pollingThread = thread;
         thread.start();
     }
 
@@ -432,7 +479,7 @@ public class ZMusicPlayer {
     /**
      * 交互式 CLI 入口。
      *
-     * <p>功能与 Zig CLI（main.zig）对齐：
+     * <p>功能与原生 CLI 对齐：
      * <ul>
      *   <li>命令行参数：{@code play <URL或路径> [--lyrics <LRC路径或URL>]}</li>
      *   <li>实时显示：进度条 + 播放状态 + 时间 + 音量 + 歌词</li>
