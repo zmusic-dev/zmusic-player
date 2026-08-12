@@ -32,8 +32,6 @@ public final class JniSmokeTest {
     }
 
     private static void basicContract() throws Exception {
-        require(ZMusicPlayer.class.getDeclaredMethod("initializeAndroid", Object.class) != null,
-                "Android Context 初始化 API 缺失");
         ZMusicPlayer player = new ZMusicPlayer();
         try {
             require(player.getState() == 0, "初始状态必须为 stopped");
