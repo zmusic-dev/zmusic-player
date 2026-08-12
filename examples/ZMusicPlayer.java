@@ -24,8 +24,6 @@ public class ZMusicPlayer {
     // --- 生命周期管理 ---
     // 创建和销毁底层播放器实例
 
-    /** 为 Android AAudio 后端提供应用上下文 */
-    private static native int nativeInitializeAndroid(Object context);
     /** 初始化底层播放器，返回原生对象句柄 */
     private native long nativeInit();
     /** 销毁原生对象，释放底层资源 */
@@ -147,22 +145,6 @@ public class ZMusicPlayer {
     // 轮询线程运行标志，volatile 确保多线程可见性
     private volatile boolean running = true;
     private volatile Thread pollingThread;
-
-    /**
-     * 初始化 Android 音频运行时，必须在创建第一个播放器前调用一次。
-     *
-     * @param context Android Application 或 Activity Context
-     * @throws IllegalArgumentException context 为 null 时抛出
-     * @throws IllegalStateException 原生音频运行时初始化失败时抛出
-     */
-    public static void initializeAndroid(Object context) {
-        if (context == null) {
-            throw new IllegalArgumentException("Android Context 不能为空");
-        }
-        if (nativeInitializeAndroid(context) != 0) {
-            throw new IllegalStateException("Android 音频运行时初始化失败");
-        }
-    }
 
     /**
      * 构造函数：初始化底层播放器。

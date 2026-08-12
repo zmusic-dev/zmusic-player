@@ -61,13 +61,7 @@ Rust 构建产物位于 `target/release/`：Linux 为 `libzmusic.so`，Windows �
 
 ARM64 发布目标包括 Windows `aarch64-pc-windows-msvc`、Linux `aarch64-unknown-linux-gnu` 和 Android `aarch64-linux-android`。
 
-Android ARM64 使用 `aarch64-linux-android` 目标，最低支持 Android 8.0（API 26），发布产物为 JNI 库 `libzmusic.so`，不包含桌面 CLI。Android 端必须在创建第一个播放器前传入 Application 或 Activity Context：
-
-```java
-ZMusicPlayer.initializeAndroid(context);
-```
-
-Android HTTPS 使用内置的 Mozilla 根证书，不要求宿主应用额外打包证书验证 AAR 或 Kotlin 运行时。
+Android ARM64 使用 `aarch64-linux-android` 目标，最低支持 Android 8.0（API 26），发布产物为 JNI 库 `libzmusic.so`，不包含桌面 CLI。Android 音频输出直接使用 AAudio，不需要宿主传入 Android Context。HTTPS 使用内置的 Mozilla 根证书，不要求宿主应用额外打包证书验证 AAR 或 Kotlin 运行时。
 
 ## 架构
 

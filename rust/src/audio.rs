@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(all(target_os = "android", not(feature = "test-headless")))]
+use rodio::cpal::traits::HostTrait;
 use rodio::mixer::{self, Mixer, MixerSource};
 use rodio::{Decoder, Player as RodioPlayer, Source};
 #[cfg(not(feature = "test-headless"))]
@@ -73,8 +75,7 @@ impl Engine {
         return Self::new_headless();
 
         #[cfg(not(feature = "test-headless"))]
-        let device = DeviceSinkBuilder::from_default_device()
-            .and_then(|builder| builder.open_sink_or_fallback());
+        let device = open_device_sink();
         #[cfg(not(feature = "test-headless"))]
         let (mixer, output) = match device {
             Ok(mut device) => {
@@ -157,6 +158,25 @@ impl Engine {
             _engine: self.inner.clone(),
         })
     }
+}
+
+#[cfg(all(target_os = "android", not(feature = "test-headless")))]
+fn open_device_sink() -> Result<MixerDeviceSink, rodio::DeviceSinkError> {
+    let device = rodio::cpal::default_host()
+        .default_output_device()
+        .ok_or(rodio::DeviceSinkError::NoDevice)?;
+    DeviceSinkBuilder::default()
+        .with_device(device)
+        .with_channels(NonZeroU16::new(2).unwrap())
+        .with_sample_rate(NonZeroU32::new(48_000).unwrap())
+        .with_sample_format(rodio::cpal::SampleFormat::F32)
+        .with_buffer_size(rodio::cpal::BufferSize::Fixed(2048))
+        .open_stream()
+}
+
+#[cfg(all(not(target_os = "android"), not(feature = "test-headless")))]
+fn open_device_sink() -> Result<MixerDeviceSink, rodio::DeviceSinkError> {
+    DeviceSinkBuilder::from_default_device().and_then(|builder| builder.open_sink_or_fallback())
 }
 
 pub struct Sound {

@@ -2304,12 +2304,11 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zmusic-player"
-version = "1.0.0-alpha.3"
+version = "1.0.0-alpha.4"
 dependencies = [
  "crossterm",
  "encoding_rs",
  "jni 0.22.4",
- "ndk-context",
  "reqwest 0.12.28",
  "reqwest 0.13.4",
  "rodio",
