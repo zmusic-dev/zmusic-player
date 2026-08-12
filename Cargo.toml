@@ -5,6 +5,9 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
+[features]
+test-headless = []
+
 [lib]
 name = "zmusic"
 crate-type = ["cdylib", "rlib"]

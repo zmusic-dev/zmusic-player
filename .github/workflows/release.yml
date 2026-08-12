@@ -91,7 +91,7 @@ jobs:
 
       - name: Test Rust
         if: matrix.run_tests
-        run: cargo test --all-targets --target=${{ matrix.rust_target }}
+        run: cargo test --all-targets --features test-headless --target=${{ matrix.rust_target }}
 
       - name: Test Java JNI
         if: matrix.test_jni

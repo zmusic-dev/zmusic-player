@@ -8,7 +8,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rodio::mixer::{self, Mixer, MixerSource};
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player as RodioPlayer, Source};
+use rodio::{Decoder, Player as RodioPlayer, Source};
+#[cfg(not(feature = "test-headless"))]
+use rodio::{DeviceSinkBuilder, MixerDeviceSink};
 
 use crate::state::PlayerError;
 
@@ -22,8 +24,13 @@ struct EngineInner {
 }
 
 enum AudioOutput {
-    Device { _sink: MixerDeviceSink },
-    Headless { _output: HeadlessOutput },
+    #[cfg(not(feature = "test-headless"))]
+    Device {
+        _sink: MixerDeviceSink,
+    },
+    Headless {
+        _output: HeadlessOutput,
+    },
 }
 
 struct HeadlessOutput {
@@ -62,8 +69,13 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Result<Self, PlayerError> {
+        #[cfg(feature = "test-headless")]
+        return Self::new_headless();
+
+        #[cfg(not(feature = "test-headless"))]
         let device = DeviceSinkBuilder::from_default_device()
             .and_then(|builder| builder.open_sink_or_fallback());
+        #[cfg(not(feature = "test-headless"))]
         let (mixer, output) = match device {
             Ok(mut device) => {
                 device.log_on_drop(false);
@@ -72,19 +84,27 @@ impl Engine {
                     AudioOutput::Device { _sink: device },
                 )
             }
-            Err(_) => {
-                let (mixer, source) = mixer::mixer(
-                    NonZeroU16::new(HEADLESS_CHANNELS).unwrap(),
-                    NonZeroU32::new(HEADLESS_SAMPLE_RATE).unwrap(),
-                );
-                let output = HeadlessOutput::start(source)?;
-                (mixer, AudioOutput::Headless { _output: output })
-            }
+            Err(_) => return Self::new_headless(),
         };
+        #[cfg(not(feature = "test-headless"))]
         Ok(Self {
             inner: Arc::new(EngineInner {
                 mixer,
                 _output: output,
+            }),
+        })
+    }
+
+    fn new_headless() -> Result<Self, PlayerError> {
+        let (mixer, source) = mixer::mixer(
+            NonZeroU16::new(HEADLESS_CHANNELS).unwrap(),
+            NonZeroU32::new(HEADLESS_SAMPLE_RATE).unwrap(),
+        );
+        let output = HeadlessOutput::start(source)?;
+        Ok(Self {
+            inner: Arc::new(EngineInner {
+                mixer,
+                _output: AudioOutput::Headless { _output: output },
             }),
         })
     }
