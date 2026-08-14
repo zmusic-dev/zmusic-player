@@ -21,6 +21,8 @@ const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
 const NETWORK_STALL_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIAL_BUFFER_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_RECONNECT_ATTEMPTS: usize = 3;
+const RECONNECT_BACKOFF: Duration = Duration::from_millis(100);
 static TLS_PROVIDER_READY: OnceLock<bool> = OnceLock::new();
 
 pub struct HttpStream {
@@ -289,7 +291,10 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
         }
     };
 
+    // 解码器 seek 会替换缓冲；网络重连必须保留尚未消费的数据并接在缓冲末尾。
     let mut start_offset = 0_u64;
+    let mut preserve_buffer = false;
+    let mut reconnect_attempts = 0_usize;
     loop {
         if shared.cancelled.load(Ordering::Acquire) {
             set_error(&shared, PlayerError::Cancelled);
@@ -311,27 +316,62 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
         let mut response = match send_result {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
-                set_error(
-                    &shared,
-                    if error.is_timeout() {
-                        PlayerError::StreamTimeout
-                    } else {
-                        PlayerError::HttpError
-                    },
-                );
+                let error = if error.is_timeout() {
+                    PlayerError::StreamTimeout
+                } else {
+                    PlayerError::HttpError
+                };
+                if preserve_buffer {
+                    let Some((offset, keep_buffer)) = next_request_after_stream_error(
+                        &shared,
+                        error,
+                        start_offset,
+                        &mut reconnect_attempts,
+                    ) else {
+                        return;
+                    };
+                    start_offset = offset;
+                    preserve_buffer = keep_buffer;
+                    if keep_buffer && !wait_before_reconnect(&shared).await {
+                        return;
+                    }
+                    continue;
+                }
+                set_error(&shared, error);
                 return;
             }
             Err(_) => {
+                if preserve_buffer {
+                    let Some((offset, keep_buffer)) = next_request_after_stream_error(
+                        &shared,
+                        PlayerError::StreamTimeout,
+                        start_offset,
+                        &mut reconnect_attempts,
+                    ) else {
+                        return;
+                    };
+                    start_offset = offset;
+                    preserve_buffer = keep_buffer;
+                    if keep_buffer && !wait_before_reconnect(&shared).await {
+                        return;
+                    }
+                    continue;
+                }
                 set_error(&shared, PlayerError::StreamTimeout);
                 return;
             }
         };
 
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            if !range_not_satisfiable_is_eof(&shared, &response, start_offset) {
+                set_error(&shared, PlayerError::HttpError);
+                return;
+            }
             mark_complete(&shared, start_offset);
             match wait_for_seek(&shared) {
                 Some(offset) => {
                     start_offset = offset;
+                    preserve_buffer = false;
                     continue;
                 }
                 None => return,
@@ -343,13 +383,23 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
         }
 
         let partial = response.status() == StatusCode::PARTIAL_CONTENT;
+        if partial && parse_content_range_start(&response) != Some(start_offset) {
+            set_error(&shared, PlayerError::HttpError);
+            return;
+        }
         let response_start = if partial { start_offset } else { 0 };
         let total_size = parse_total_size(&response).or_else(|| {
             response
                 .content_length()
                 .map(|length| response_start.saturating_add(length))
         });
-        reset_download(&shared, start_offset, total_size);
+        if preserve_buffer {
+            if !resume_download(&shared, start_offset, total_size) {
+                return;
+            }
+        } else {
+            reset_download(&shared, start_offset, total_size);
+        }
 
         let mut wire_offset = response_start;
         let mut discard_until = if partial {
@@ -365,7 +415,7 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
                 return;
             }
             if let Some(offset) = take_requested_seek(&shared) {
-                restart = Some(offset);
+                restart = Some((offset, false));
                 break;
             }
 
@@ -376,6 +426,7 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
                     return;
                 }
             };
+            // 服务端忽略 Range 时，wire_offset 可能仍落后于已经组装好的缓冲末尾。
             let chunk = match chunk_result {
                 Ok(Ok(None)) => {
                     mark_complete(&shared, wire_offset);
@@ -383,22 +434,22 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
                 }
                 Ok(Ok(Some(chunk))) => chunk,
                 Err(_) => {
-                    if let Some(offset) =
-                        take_requested_seek_or_set_error(&shared, PlayerError::StreamTimeout)
-                    {
-                        restart = Some(offset);
-                        break;
-                    }
-                    return;
+                    restart = next_request_after_stream_error(
+                        &shared,
+                        PlayerError::StreamTimeout,
+                        wire_offset.max(discard_until),
+                        &mut reconnect_attempts,
+                    );
+                    break;
                 }
                 Ok(Err(_)) => {
-                    if let Some(offset) =
-                        take_requested_seek_or_set_error(&shared, PlayerError::HttpError)
-                    {
-                        restart = Some(offset);
-                        break;
-                    }
-                    return;
+                    restart = next_request_after_stream_error(
+                        &shared,
+                        PlayerError::HttpError,
+                        wire_offset.max(discard_until),
+                        &mut reconnect_attempts,
+                    );
+                    break;
                 }
             };
 
@@ -416,13 +467,24 @@ async fn download_loop(shared: Arc<Shared>, url: String) {
             discard_until = discard_until.max(wire_offset.min(discard_until));
         }
 
-        if let Some(offset) = restart {
+        if let Some((offset, keep_buffer)) = restart {
             start_offset = offset;
+            preserve_buffer = keep_buffer;
+            if keep_buffer && !wait_before_reconnect(&shared).await {
+                return;
+            }
             continue;
         }
 
+        if shared.state.lock().unwrap().error.is_some() {
+            return;
+        }
+
         match wait_for_seek(&shared) {
-            Some(offset) => start_offset = offset,
+            Some(offset) => {
+                start_offset = offset;
+                preserve_buffer = false;
+            }
             None => return,
         }
     }
@@ -445,6 +507,13 @@ async fn wait_cancelled(shared: &Shared) {
     notified.await;
 }
 
+async fn wait_before_reconnect(shared: &Shared) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(RECONNECT_BACKOFF) => true,
+        () = wait_cancelled(shared) => false,
+    }
+}
+
 fn reset_download(shared: &Shared, start_offset: u64, total_size: Option<u64>) {
     let mut state = shared.state.lock().unwrap();
     state.data.clear();
@@ -456,6 +525,25 @@ fn reset_download(shared: &Shared, start_offset: u64, total_size: Option<u64>) {
         state.total_size = total_size;
     }
     shared.changed.notify_all();
+}
+
+fn resume_download(shared: &Shared, start_offset: u64, total_size: Option<u64>) -> bool {
+    let mut state = shared.state.lock().unwrap();
+    if state.end_offset != start_offset
+        || matches!((state.total_size, total_size), (Some(old), Some(new)) if old != new)
+    {
+        state.error = Some(PlayerError::HttpError);
+        state.complete = true;
+        shared.changed.notify_all();
+        return false;
+    }
+    state.complete = false;
+    state.error = None;
+    if total_size.is_some() {
+        state.total_size = total_size;
+    }
+    shared.changed.notify_all();
+    true
 }
 
 fn append_chunk(shared: &Shared, mut chunk: &[u8]) -> bool {
@@ -498,10 +586,19 @@ fn take_requested_seek(shared: &Shared) -> Option<u64> {
     shared.state.lock().unwrap().requested_seek.take()
 }
 
-fn take_requested_seek_or_set_error(shared: &Shared, error: PlayerError) -> Option<u64> {
+fn next_request_after_stream_error(
+    shared: &Shared,
+    error: PlayerError,
+    resume_offset: u64,
+    reconnect_attempts: &mut usize,
+) -> Option<(u64, bool)> {
     let mut state = shared.state.lock().unwrap();
     if let Some(offset) = state.requested_seek.take() {
-        return Some(offset);
+        return Some((offset, false));
+    }
+    if *reconnect_attempts < MAX_RECONNECT_ATTEMPTS {
+        *reconnect_attempts += 1;
+        return Some((resume_offset, true));
     }
     state.error = Some(error);
     state.complete = true;
@@ -539,6 +636,30 @@ fn set_error(shared: &Shared, error: PlayerError) {
 fn parse_total_size(response: &reqwest::Response) -> Option<u64> {
     let value = response.headers().get(CONTENT_RANGE)?.to_str().ok()?;
     value.rsplit_once('/')?.1.parse().ok()
+}
+
+fn parse_content_range_start(response: &reqwest::Response) -> Option<u64> {
+    let value = response.headers().get(CONTENT_RANGE)?.to_str().ok()?;
+    let (unit, range) = value.trim().split_once(' ')?;
+    if !unit.eq_ignore_ascii_case("bytes") {
+        return None;
+    }
+    range.split_once('-')?.0.parse().ok()
+}
+
+fn range_not_satisfiable_is_eof(
+    shared: &Shared,
+    response: &reqwest::Response,
+    start_offset: u64,
+) -> bool {
+    let reported_size = parse_total_size(response);
+    let known_size = shared.state.lock().unwrap().total_size;
+    if matches!((known_size, reported_size), (Some(old), Some(new)) if old != new) {
+        return false;
+    }
+    reported_size
+        .or(known_size)
+        .is_some_and(|total_size| start_offset >= total_size)
 }
 
 #[cfg(test)]
@@ -853,6 +974,304 @@ mod tests {
             &expected_payload[target as usize..target as usize + output.len()]
         );
         drop(stream);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn truncated_response_resumes_from_received_offset() {
+        let split = 192 * 1024;
+        let payload: Vec<u8> = (0..512 * 1024).map(|index| (index % 251) as u8).collect();
+        let expected_payload = payload.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = mpsc::channel();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            initial_socket.write_all(&payload[..split]).unwrap();
+            initial_socket.flush().unwrap();
+            body_sent_tx.send(()).unwrap();
+            disconnect_rx.recv().unwrap();
+            drop(initial_socket);
+
+            let (mut range_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut range_socket);
+            let range_start = parse_range_start(&request).unwrap();
+            assert_eq!(range_start, split);
+            write!(
+                range_socket,
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {range_start}-{}/{}\r\nConnection: close\r\n\r\n",
+                payload.len() - range_start,
+                payload.len() - 1,
+                payload.len()
+            )
+            .unwrap();
+            range_socket.write_all(&payload[range_start..]).unwrap();
+        });
+
+        let stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
+        body_sent_rx.recv().unwrap();
+        disconnect_tx.send(()).unwrap();
+        let result = read_to_end(stream);
+
+        assert_eq!(result.unwrap(), expected_payload);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn truncated_response_resumes_when_server_ignores_range() {
+        let split = 192 * 1024;
+        let payload: Vec<u8> = (0..512 * 1024).map(|index| (index % 239) as u8).collect();
+        let expected_payload = payload.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = mpsc::channel();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            initial_socket.write_all(&payload[..split]).unwrap();
+            initial_socket.flush().unwrap();
+            body_sent_tx.send(()).unwrap();
+            disconnect_rx.recv().unwrap();
+            drop(initial_socket);
+
+            let (mut retry_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut retry_socket);
+            assert_eq!(parse_range_start(&request), Some(split));
+            write!(
+                retry_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            retry_socket.write_all(&payload).unwrap();
+        });
+
+        let stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
+        body_sent_rx.recv().unwrap();
+        disconnect_tx.send(()).unwrap();
+        let result = read_to_end(stream);
+
+        assert_eq!(result.unwrap(), expected_payload);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn repeated_disconnect_while_discarding_prefix_keeps_assembled_offset() {
+        let split = 192 * 1024;
+        let payload: Vec<u8> = (0..512 * 1024).map(|index| (index % 233) as u8).collect();
+        let expected_payload = payload.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = mpsc::channel();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            initial_socket.write_all(&payload[..split]).unwrap();
+            initial_socket.flush().unwrap();
+            body_sent_tx.send(()).unwrap();
+            disconnect_rx.recv().unwrap();
+            drop(initial_socket);
+
+            let (mut full_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut full_socket);
+            assert_eq!(parse_range_start(&request), Some(split));
+            write!(
+                full_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            full_socket.write_all(&payload[..split / 2]).unwrap();
+            drop(full_socket);
+
+            let (mut range_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut range_socket);
+            let range_start = parse_range_start(&request).unwrap();
+            assert_eq!(range_start, split);
+            write!(
+                range_socket,
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {range_start}-{}/{}\r\nConnection: close\r\n\r\n",
+                payload.len() - range_start,
+                payload.len() - 1,
+                payload.len()
+            )
+            .unwrap();
+            range_socket.write_all(&payload[range_start..]).unwrap();
+        });
+
+        let stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
+        body_sent_rx.recv().unwrap();
+        disconnect_tx.send(()).unwrap();
+        let result = read_to_end(stream);
+
+        assert_eq!(result.unwrap(), expected_payload);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reconnect_attempts_are_bounded() {
+        let split = 192 * 1024;
+        let total_size = 512 * 1024;
+        let payload = vec![7_u8; split];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = mpsc::channel();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {total_size}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            initial_socket.write_all(&payload).unwrap();
+            initial_socket.flush().unwrap();
+            body_sent_tx.send(()).unwrap();
+            disconnect_rx.recv().unwrap();
+            drop(initial_socket);
+
+            for _ in 0..MAX_RECONNECT_ATTEMPTS {
+                let (mut retry_socket, _) = listener.accept().unwrap();
+                let request = read_request(&mut retry_socket);
+                let range_start = parse_range_start(&request).unwrap();
+                assert_eq!(range_start, split);
+                write!(
+                    retry_socket,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {range_start}-{}/{}\r\nConnection: close\r\n\r\n",
+                    total_size - range_start,
+                    total_size - 1,
+                    total_size
+                )
+                .unwrap();
+            }
+        });
+
+        let mut stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
+        let control = stream.control();
+        body_sent_rx.recv().unwrap();
+        disconnect_tx.send(()).unwrap();
+        let mut output = Vec::new();
+        let result = stream.read_to_end(&mut output);
+
+        assert!(result.is_err());
+        assert_eq!(control.error(), Some(PlayerError::HttpError));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn mismatched_content_range_is_rejected() {
+        let split = 192 * 1024;
+        let payload = vec![11_u8; 512 * 1024];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = mpsc::channel();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )
+            .unwrap();
+            initial_socket.write_all(&payload[..split]).unwrap();
+            initial_socket.flush().unwrap();
+            body_sent_tx.send(()).unwrap();
+            disconnect_rx.recv().unwrap();
+            drop(initial_socket);
+
+            let (mut retry_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut retry_socket);
+            assert_eq!(parse_range_start(&request), Some(split));
+            write!(
+                retry_socket,
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-{}/{}\r\nConnection: close\r\n\r\n",
+                payload.len(),
+                payload.len() - 1,
+                payload.len()
+            )
+            .unwrap();
+            retry_socket.write_all(&payload).unwrap();
+        });
+
+        let mut stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
+        let control = stream.control();
+        body_sent_rx.recv().unwrap();
+        disconnect_tx.send(()).unwrap();
+        let mut output = Vec::new();
+        let result = stream.read_to_end(&mut output);
+
+        assert!(result.is_err());
+        assert_eq!(control.error(), Some(PlayerError::HttpError));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn premature_range_not_satisfiable_is_rejected() {
+        let split = 192 * 1024;
+        let total_size = 512 * 1024;
+        let payload = vec![13_u8; split];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = mpsc::channel();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut initial_socket, _) = listener.accept().unwrap();
+            read_request(&mut initial_socket);
+            write!(
+                initial_socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {total_size}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            initial_socket.write_all(&payload).unwrap();
+            initial_socket.flush().unwrap();
+            body_sent_tx.send(()).unwrap();
+            disconnect_rx.recv().unwrap();
+            drop(initial_socket);
+
+            let (mut retry_socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut retry_socket);
+            assert_eq!(parse_range_start(&request), Some(split));
+            write!(
+                retry_socket,
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total_size}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+
+        let mut stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
+        let control = stream.control();
+        body_sent_rx.recv().unwrap();
+        disconnect_tx.send(()).unwrap();
+        let mut output = Vec::new();
+        let result = stream.read_to_end(&mut output);
+
+        assert!(result.is_err());
+        assert_eq!(control.error(), Some(PlayerError::HttpError));
         server.join().unwrap();
     }
 }
