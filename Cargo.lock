@@ -2304,7 +2304,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zmusic-player"
-version = "1.0.0-alpha.4"
+version = "1.0.0-alpha.5"
 dependencies = [
  "crossterm",
  "encoding_rs",
