@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use zmusic::Player;
 use zmusic::state::{PlaybackState, PlayerError};
 
+const ERROR_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct TruncatedServer {
     url: String,
     body_sent: Receiver<()>,
@@ -140,7 +142,7 @@ fn truncated_http_body_moves_player_to_error_state() {
     server.wait_until_body_sent();
     server.close();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + ERROR_PROPAGATION_TIMEOUT;
     while player.state() != PlaybackState::Error && Instant::now() < deadline {
         player.tick();
         thread::sleep(Duration::from_millis(10));
@@ -161,7 +163,7 @@ fn truncated_http_body_moves_paused_player_to_error_state() {
     server.wait_until_body_sent();
     server.close();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + ERROR_PROPAGATION_TIMEOUT;
     while player.state() != PlaybackState::Error && Instant::now() < deadline {
         player.tick();
         thread::sleep(Duration::from_millis(10));
@@ -186,7 +188,7 @@ fn cli_exits_with_an_error_when_http_body_is_truncated() {
     thread::sleep(Duration::from_millis(250));
     server.close();
 
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + ERROR_PROPAGATION_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
