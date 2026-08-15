@@ -16,6 +16,8 @@ use crate::state::PlayerError;
 
 pub const MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const INITIAL_BUFFER_BYTES: usize = 128 * 1024;
+const PLAYBACK_START_BUFFER_BYTES: usize = 256 * 1024;
+const REBUFFER_BYTES: usize = 256 * 1024;
 const REWIND_BYTES: u64 = 256 * 1024;
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
 const NETWORK_STALL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -52,6 +54,7 @@ struct BufferState {
     complete: bool,
     error: Option<PlayerError>,
     requested_seek: Option<u64>,
+    resume_threshold: usize,
 }
 
 impl HttpStream {
@@ -70,6 +73,7 @@ impl HttpStream {
                 complete: false,
                 error: None,
                 requested_seek: None,
+                resume_threshold: PLAYBACK_START_BUFFER_BYTES,
             }),
             changed: Condvar::new(),
             cancelled: AtomicBool::new(false),
@@ -192,13 +196,17 @@ fn read_from_buffer(shared: &Shared, cursor: &mut u64, output: &mut [u8]) -> io:
         if *cursor >= state.base_offset && *cursor < state.end_offset {
             let start = (*cursor - state.base_offset) as usize;
             let available = (state.end_offset - *cursor) as usize;
-            let count = output.len().min(available);
-            let data = state.data.make_contiguous();
-            output[..count].copy_from_slice(&data[start..start + count]);
-            *cursor += count as u64;
-            state.reader_offset = *cursor;
-            shared.changed.notify_all();
-            return Ok(count);
+            if state.resume_threshold == 0 || available >= state.resume_threshold || state.complete
+            {
+                state.resume_threshold = 0;
+                let count = output.len().min(available);
+                let data = state.data.make_contiguous();
+                output[..count].copy_from_slice(&data[start..start + count]);
+                *cursor += count as u64;
+                state.reader_offset = *cursor;
+                shared.changed.notify_all();
+                return Ok(count);
+            }
         }
 
         if *cursor == state.end_offset && state.complete {
@@ -208,7 +216,10 @@ fn read_from_buffer(shared: &Shared, cursor: &mut u64, output: &mut [u8]) -> io:
         if *cursor < state.base_offset || *cursor > state.end_offset {
             state.requested_seek = Some(*cursor);
             state.complete = false;
+            state.resume_threshold = REBUFFER_BYTES;
             shared.changed.notify_all();
+        } else if *cursor == state.end_offset {
+            state.resume_threshold = REBUFFER_BYTES;
         }
 
         (state, _) = shared
@@ -255,6 +266,7 @@ fn seek_in_buffer(shared: &Shared, cursor: &mut u64, position: SeekFrom) -> io::
     if target < state.base_offset || target > state.end_offset {
         state.requested_seek = Some(target);
         state.complete = false;
+        state.resume_threshold = REBUFFER_BYTES;
     }
     shared.changed.notify_all();
     Ok(target)
@@ -671,6 +683,35 @@ mod tests {
 
     use super::*;
 
+    const EXPECTED_PLAYBACK_START_BUFFER_BYTES: usize = 256 * 1024;
+    const EXPECTED_REBUFFER_BYTES: usize = 256 * 1024;
+
+    fn shared_with_data(data_len: usize) -> Arc<Shared> {
+        Arc::new(Shared {
+            state: Mutex::new(BufferState {
+                data: VecDeque::from(vec![7_u8; data_len]),
+                base_offset: 0,
+                end_offset: data_len as u64,
+                reader_offset: 0,
+                total_size: None,
+                complete: false,
+                error: None,
+                requested_seek: None,
+                resume_threshold: PLAYBACK_START_BUFFER_BYTES,
+            }),
+            changed: Condvar::new(),
+            cancelled: AtomicBool::new(false),
+            cancel_notify: Notify::new(),
+        })
+    }
+
+    fn append_test_data(shared: &Shared, count: usize) {
+        let mut state = shared.state.lock().unwrap();
+        state.data.extend(vec![9_u8; count]);
+        state.end_offset += count as u64;
+        shared.changed.notify_all();
+    }
+
     fn read_request(socket: &mut TcpStream) -> String {
         let mut request = Vec::new();
         let mut buffer = [0_u8; 1_024];
@@ -705,6 +746,71 @@ mod tests {
             HttpStream::start("file.mp3"),
             Err(PlayerError::InvalidArgument)
         ));
+    }
+
+    #[test]
+    fn first_read_waits_for_playback_start_buffer() {
+        let shared = shared_with_data(INITIAL_BUFFER_BYTES);
+        let reader_shared = shared.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut cursor = 0;
+            let mut output = [0_u8; 1];
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(read_from_buffer(&reader_shared, &mut cursor, &mut output))
+                .unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        let early_result = result_rx.recv_timeout(Duration::from_millis(100));
+        append_test_data(
+            &shared,
+            EXPECTED_PLAYBACK_START_BUFFER_BYTES - INITIAL_BUFFER_BYTES,
+        );
+        let returned_early = early_result.is_ok();
+        let result = early_result.unwrap_or_else(|_| {
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("达到首缓冲水位后读取未恢复")
+        });
+        reader.join().unwrap();
+
+        assert!(!returned_early, "首缓冲不足时不应开始解码");
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[test]
+    fn underrun_waits_for_rebuffer_reserve() {
+        let shared = shared_with_data(EXPECTED_PLAYBACK_START_BUFFER_BYTES);
+        let reader_shared = shared.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut cursor = EXPECTED_PLAYBACK_START_BUFFER_BYTES as u64;
+            let mut output = [0_u8; 1];
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(read_from_buffer(&reader_shared, &mut cursor, &mut output))
+                .unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        assert!(result_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        append_test_data(&shared, 64 * 1024);
+        let early_result = result_rx.recv_timeout(Duration::from_millis(100));
+        append_test_data(&shared, EXPECTED_REBUFFER_BYTES - 64 * 1024);
+        let returned_early = early_result.is_ok();
+        let result = early_result.unwrap_or_else(|_| {
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("达到重缓冲水位后读取未恢复")
+        });
+        reader.join().unwrap();
+
+        assert!(!returned_early, "少量网络数据不应立即恢复解码");
+        assert_eq!(result.unwrap(), 1);
     }
 
     #[test]
@@ -1215,7 +1321,6 @@ mod tests {
                 payload.len()
             )
             .unwrap();
-            retry_socket.write_all(&payload).unwrap();
         });
 
         let mut stream = HttpStream::start(&format!("http://{address}/audio.bin")).unwrap();
