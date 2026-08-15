@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use jni::EnvUnowned;
@@ -10,14 +10,43 @@ use jni::sys::{jboolean, jfloat, jint, jlong};
 use crate::Player;
 use crate::event::Event;
 use crate::queue::Track;
-use crate::state::RepeatMode;
+use crate::state::{PlaybackState, RepeatMode};
 
-type SharedPlayer = Arc<Mutex<Player>>;
+struct SharedPlayer {
+    player: Mutex<Player>,
+    state: AtomicI32,
+}
+
+impl SharedPlayer {
+    fn new() -> Self {
+        Self {
+            player: Mutex::new(Player::new()),
+            state: AtomicI32::new(PlaybackState::Stopped as jint),
+        }
+    }
+
+    fn with_player<R>(&self, operation: impl FnOnce(&mut Player) -> R) -> R {
+        let mut player = lock(&self.player);
+        let result = operation(&mut player);
+        self.state.store(player.state() as jint, Ordering::Release);
+        result
+    }
+
+    fn current_state(&self) -> jint {
+        self.state.load(Ordering::Acquire)
+    }
+
+    fn set_state(&self, state: PlaybackState) {
+        self.state.store(state as jint, Ordering::Release);
+    }
+}
+
+type PlayerHandle = Arc<SharedPlayer>;
 
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
-static HANDLES: OnceLock<Mutex<HashMap<jlong, SharedPlayer>>> = OnceLock::new();
+static HANDLES: OnceLock<Mutex<HashMap<jlong, PlayerHandle>>> = OnceLock::new();
 
-fn handles() -> &'static Mutex<HashMap<jlong, SharedPlayer>> {
+fn handles() -> &'static Mutex<HashMap<jlong, PlayerHandle>> {
     HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -27,7 +56,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn get_player(handle: jlong) -> Option<SharedPlayer> {
+fn get_player(handle: jlong) -> Option<PlayerHandle> {
     lock(handles()).get(&handle).cloned()
 }
 
@@ -35,11 +64,17 @@ fn with_player<R>(handle: jlong, default: R, operation: impl FnOnce(&mut Player)
     let Some(player) = get_player(handle) else {
         return default;
     };
-    operation(&mut lock(&player))
+    player.with_player(operation)
 }
 
 fn report_error(handle: jlong) {
     with_player(handle, (), Player::report_error);
+}
+
+fn current_state(handle: jlong) -> jint {
+    get_player(handle).map_or(PlaybackState::Stopped as jint, |player| {
+        player.current_state()
+    })
 }
 
 fn optional_string(env: &jni::Env<'_>, value: &JString<'_>) -> jni::errors::Result<Option<String>> {
@@ -61,7 +96,7 @@ pub extern "system" fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeInit<'local>(
             if handle <= 0 {
                 return Ok(0);
             }
-            lock(handles()).insert(handle, Arc::new(Mutex::new(Player::new())));
+            lock(handles()).insert(handle, Arc::new(SharedPlayer::new()));
             Ok(handle)
         })
         .resolve::<LogErrorAndDefault>()
@@ -92,6 +127,9 @@ pub extern "system" fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePlay<'local>(
     unowned_env
         .with_env(|env| -> jni::errors::Result<_> {
             let source = source.try_to_string(env)?;
+            if let Some(player) = get_player(handle) {
+                player.set_state(PlaybackState::Loading);
+            }
             Ok(Some(with_player(handle, -1, |player| {
                 player.play(&source).map_or(-1, |_| 0)
             })))
@@ -178,12 +216,16 @@ macro_rules! player_getter {
     };
 }
 
-player_getter!(
-    Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetState,
-    jint,
-    0,
-    |player| player.state() as jint
-);
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetState<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+) -> jint {
+    unowned_env
+        .with_env(|_| -> jni::errors::Result<_> { Ok(current_state(handle)) })
+        .resolve::<LogErrorAndDefault>()
+}
 player_getter!(
     Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetPosition,
     jlong,
@@ -461,4 +503,32 @@ pub extern "system" fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativePollEvent<'loca
             }))
         })
         .resolve::<LogErrorAndDefault>()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn state_snapshot_does_not_wait_for_player_lock() {
+        let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let player = Arc::new(SharedPlayer::new());
+        lock(handles()).insert(handle, player.clone());
+        let player_guard = lock(&player.player);
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let reader = thread::spawn(move || {
+            result_tx.send(current_state(handle)).unwrap();
+        });
+        let result = result_rx.recv_timeout(Duration::from_millis(100));
+
+        drop(player_guard);
+        reader.join().unwrap();
+        lock(handles()).remove(&handle);
+        assert_eq!(result, Ok(PlaybackState::Stopped as jint));
+    }
 }
