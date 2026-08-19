@@ -56,6 +56,7 @@ public final class JniSmokeTest {
             require(player.getQueueSize() == 0, "清空队列失败");
             require(player.play("/path/that/does/not/exist.mp3") == -1, "无效文件必须失败");
             require(player.getState() == 4, "解码失败后必须进入 error 状态");
+            require("DecodeFailed".equals(player.getLastError()), "必须保留具体解码错误");
         } finally {
             player.destroy();
             player.destroy();
@@ -66,6 +67,7 @@ public final class JniSmokeTest {
         ZMusicPlayer player = new ZMusicPlayer();
         try {
             require(player.play("") == -1, "空播放地址必须失败");
+            require("InvalidArgument".equals(player.getLastError()), "必须保留具体参数错误");
             require(player.seek(-1) == -1, "负数 seek 必须失败");
             player.removeFromQueue(-1);
             player.playAtIndex(-1);
@@ -82,6 +84,7 @@ public final class JniSmokeTest {
         }
         require(player.pause() == -1, "destroy 后调用必须失败");
         require(player.getState() == 0, "destroy 后查询必须返回安全默认值");
+        require(player.getLastError() == null, "destroy 后错误查询必须返回安全默认值");
     }
 
     private static void multipleInstancesAreIsolated() {

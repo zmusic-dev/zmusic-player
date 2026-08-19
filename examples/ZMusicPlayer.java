@@ -52,6 +52,8 @@ public class ZMusicPlayer {
     private native long nativeGetPosition(long handle);
     /** 获取媒体总时长（毫秒） */
     private native long nativeGetDuration(long handle);
+    /** 获取最近一次播放错误名称，无错误时返回 null */
+    private native String nativeGetLastError(long handle);
     /** 获取当前音量（0.0 ~ 1.0） */
     private native float nativeGetVolume(long handle);
     /** 设置音量（0.0 ~ 1.0） */
@@ -253,6 +255,13 @@ public class ZMusicPlayer {
     public long getDuration() { return nativeGetDuration(handle); }
 
     /**
+     * 获取最近一次播放错误名称。
+     *
+     * @return 原生错误名称，无错误时返回 null
+     */
+    public String getLastError() { return nativeGetLastError(handle); }
+
+    /**
      * 获取当前音量。
      *
      * @return 音量值（0.0 ~ 1.0）
@@ -440,7 +449,10 @@ public class ZMusicPlayer {
                         case EVENT_TRACK_ENDED -> currentListener.onTrackEnded();
                         case EVENT_PROGRESS_UPDATE -> currentListener.onProgress(
                             nativeGetPosition(currentHandle), nativeGetDuration(currentHandle));
-                        case EVENT_ERROR -> currentListener.onError("播放错误");
+                        case EVENT_ERROR -> {
+                            String error = nativeGetLastError(currentHandle);
+                            currentListener.onError(error == null ? "Unknown" : error);
+                        }
                         case EVENT_BUFFERING -> currentListener.onBuffering(true);
                     }
                 }

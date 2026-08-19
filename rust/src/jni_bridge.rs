@@ -238,6 +238,24 @@ player_getter!(
     0,
     |player| player.duration_ms().min(jlong::MAX as u64) as jlong
 );
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetLastError<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+) -> JString<'local> {
+    unowned_env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let error = with_player(handle, None, |player| {
+                player.error().map(|error| error.to_string())
+            });
+            match error {
+                Some(error) => JString::from_str(env, error),
+                None => Ok(JString::default()),
+            }
+        })
+        .resolve::<LogErrorAndDefault>()
+}
 player_getter!(
     Java_me_zhenxin_zmusic_ZMusicPlayer_nativeGetVolume,
     jfloat,
